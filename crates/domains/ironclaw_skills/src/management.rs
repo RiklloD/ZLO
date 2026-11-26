@@ -29,7 +29,9 @@ pub use install_bundle::{
     MAX_INSTALL_BUNDLE_FILE_BYTES, MAX_INSTALL_BUNDLE_FILES, MAX_INSTALL_BUNDLE_TOTAL_BYTES,
     SkillInstallFile, normalize_install_bundle_relative_path,
 };
-pub(crate) use install_bundle::{SkillBundleSnapshot, capture_skill_bundle, restore_skill_bundle};
+pub(crate) use install_bundle::{
+    SkillBundleSnapshot, capture_skill_bundle, replace_skill_bundle, restore_skill_bundle,
+};
 
 use install_bundle::{
     existing_skill_install_matches, install_metadata_source, installed_skill_source,

@@ -19,6 +19,7 @@
 //!   touched.
 
 pub mod approvals;
+pub mod cli_home;
 pub mod config;
 pub mod items;
 pub mod memory;
@@ -294,6 +295,7 @@ impl ConfigSyncService {
             index_only: request.index_only,
             have: request.have,
             after: request.after,
+            until: request.until,
         };
         let selected: BTreeSet<ConfigSyncDomain> = if request.domains.is_empty() {
             self.handlers
@@ -588,7 +590,10 @@ fn parse_raw_export_request(raw: Value) -> Result<ConfigSyncExportRequest, (Stri
         ));
     };
     for key in obj.keys() {
-        if !matches!(key.as_str(), "domains" | "index_only" | "have" | "after") {
+        if !matches!(
+            key.as_str(),
+            "domains" | "index_only" | "have" | "after" | "until"
+        ) {
             return Err((
                 key.clone(),
                 format!("unknown field `{key}` in export request"),
@@ -596,7 +601,7 @@ fn parse_raw_export_request(raw: Value) -> Result<ConfigSyncExportRequest, (Stri
         }
     }
     // A page belongs to one itemized domain.
-    let paged = ["index_only", "have", "after"].iter().any(|key| {
+    let paged = ["index_only", "have", "after", "until"].iter().any(|key| {
         obj.get(*key)
             .is_some_and(|v| !v.is_null() && v != &Value::Bool(false))
     });

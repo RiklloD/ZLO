@@ -55,6 +55,10 @@ pub enum ConfigSyncDomain {
     /// Local memory documents. Two-way: a document changed on one side
     /// moves to the other; one changed on both is kept twice.
     Memory,
+    /// The person's own rules and skills files in the homes of the coding
+    /// agent CLIs (never their logins or settings). One way; files only the
+    /// receiver has are kept.
+    CliHome,
 }
 
 impl ConfigSyncDomain {
@@ -68,12 +72,13 @@ impl ConfigSyncDomain {
         Self::Skills,
         Self::SkillUsage,
         Self::Memory,
+        Self::CliHome,
     ];
 
     /// Sent in pages of items ([`ItemizedDomainPayload`]), one domain per
     /// export, so a large domain never needs one oversized snapshot.
     pub const fn itemized(self) -> bool {
-        matches!(self, Self::Skills | Self::Memory)
+        matches!(self, Self::Skills | Self::Memory | Self::CliHome)
     }
 
     /// Both computers write it: after the source's changes are applied to
@@ -94,6 +99,7 @@ impl ConfigSyncDomain {
             Self::Skills => "skills",
             Self::SkillUsage => "skill_usage",
             Self::Memory => "memory",
+            Self::CliHome => "cli_home",
         }
     }
 
@@ -108,6 +114,7 @@ impl ConfigSyncDomain {
             "skills" => Some(Self::Skills),
             "skill_usage" => Some(Self::SkillUsage),
             "memory" => Some(Self::Memory),
+            "cli_home" => Some(Self::CliHome),
             _ => None,
         }
     }
@@ -163,6 +170,10 @@ pub struct ConfigSyncExportRequest {
     /// [`ItemizedDomainPayload::next`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after: Option<String>,
+    /// Itemized domains: `have` is complete only up to this item key, so
+    /// the page stops there (its `next` is then this key).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
 }
 
 /// Portable `config.toml` sections (paths normalized with `$HOME`/`$ZLO_HOME`).
@@ -262,7 +273,8 @@ pub struct ProfilesDomainPayload {
 #[serde(deny_unknown_fields)]
 pub struct ConfigSyncItemFile {
     /// Path inside the item (`SKILL.md`, `scripts/run.sh`); empty for an
-    /// item that is one document.
+    /// item that is one document. For `cli_home`, whose items are single
+    /// host files, it is the file's mode note: empty, or `executable`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub path: String,
     /// Standard base64 of the file's bytes.
@@ -321,6 +333,7 @@ pub enum ConfigSyncDomainPayload {
     Skills(ItemizedDomainPayload),
     SkillUsage(SkillUsageDomainPayload),
     Memory(ItemizedDomainPayload),
+    CliHome(ItemizedDomainPayload),
 }
 
 impl ConfigSyncDomainPayload {
@@ -335,6 +348,7 @@ impl ConfigSyncDomainPayload {
             Self::Skills(_) => ConfigSyncDomain::Skills,
             Self::SkillUsage(_) => ConfigSyncDomain::SkillUsage,
             Self::Memory(_) => ConfigSyncDomain::Memory,
+            Self::CliHome(_) => ConfigSyncDomain::CliHome,
         }
     }
 
@@ -346,7 +360,7 @@ impl ConfigSyncDomainPayload {
             Self::Prompts(p) => &p.hash,
             Self::Approvals(p) => &p.hash,
             Self::Profiles(p) => &p.hash,
-            Self::Skills(p) | Self::Memory(p) => &p.hash,
+            Self::Skills(p) | Self::Memory(p) | Self::CliHome(p) => &p.hash,
             Self::SkillUsage(p) => &p.hash,
         }
     }

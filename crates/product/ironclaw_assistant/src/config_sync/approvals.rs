@@ -395,49 +395,10 @@ impl ConfigSyncDomainHandler for ApprovalsDomainHandler {
             }
         }
 
-        // 3. Clear overrides/grants that were removed on the source (reverts to default).
-        for (&cap_id, &prev_state) in &current_map {
-            if desired_map.contains_key(cap_id) {
-                continue;
-            }
-            let capability_id =
-                CapabilityId::new(cap_id).map_err(|error| ConfigSyncError::Store {
-                    domain: ConfigSyncDomain::Approvals,
-                    reason: error.to_string(),
-                })?;
-            match prev_state {
-                ToolApprovalSyncState::AskEachTime | ToolApprovalSyncState::Disabled => {
-                    self.overrides
-                        .clear(&CapabilityPermissionOverrideKey::new(&scope, capability_id))
-                        .await
-                        .map_err(|error| ConfigSyncError::Store {
-                            domain: ConfigSyncDomain::Approvals,
-                            reason: error.to_string(),
-                        })?;
-                    applied_count += 1;
-                }
-                ToolApprovalSyncState::AlwaysAllow => {
-                    if let Some(tool) = tools_by_id.get(cap_id) {
-                        let policy_key = PersistentApprovalPolicyKey::new(
-                            &scope,
-                            PersistentApprovalAction::Dispatch,
-                            tool.capability_id.clone(),
-                            Principal::Extension(tool.provider.clone()),
-                        );
-                        match self.persistent_policies.revoke(&policy_key).await {
-                            Ok(_) | Err(PersistentApprovalPolicyError::UnknownPolicy) => {}
-                            Err(error) => {
-                                return Err(ConfigSyncError::Store {
-                                    domain: ConfigSyncDomain::Approvals,
-                                    reason: error.to_string(),
-                                });
-                            }
-                        }
-                        applied_count += 1;
-                    }
-                }
-            }
-        }
+        // A tool the source says nothing about keeps what this computer
+        // has: an override or grant made here (a tool switched off on this
+        // computer only) is never cleared by a sync. Clearing one on the
+        // source therefore does not carry over.
 
         let status = if applied_count > 0 {
             DomainApplyStatus::Applied

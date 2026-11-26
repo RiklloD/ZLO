@@ -20,6 +20,8 @@
 //! ([`SyncOutcome::Unsupported`]).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Bound;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub use ironclaw_product_contracts::config_sync::ConfigSyncDomain;
 use serde::Deserialize;
@@ -62,6 +64,19 @@ impl SyncReport {
     fn changed_nothing(&self) -> bool {
         self.applied.is_empty() && self.skipped.is_empty() && self.warnings.is_empty()
     }
+}
+
+/// Item keys and hashes named in one page request, in bytes: well under the
+/// export route's body limit however long the keys are.
+const HAVE_WINDOW_BYTES: usize = 384 * 1024;
+
+/// A pass that was told to stop (its computer's sync was switched off, or
+/// its connection went) sends nothing further.
+fn live(stop: &AtomicBool) -> Result<(), ClientError> {
+    if stop.load(Ordering::Relaxed) {
+        return Err(ClientError::Config("configuration sync was stopped".into()));
+    }
+    Ok(())
 }
 
 /// Domains that differ and stay that way by design (the target keeps
@@ -198,6 +213,10 @@ struct Tally {
     report: SyncReport,
     /// Domains in which any apply wrote something.
     wrote: BTreeSet<ConfigSyncDomain>,
+    /// Domains an apply could not finish (a store error, a document that
+    /// changed under it, an item too large): never "settled", so the next
+    /// check carries them again.
+    unfinished: BTreeSet<ConfigSyncDomain>,
 }
 
 impl Tally {
@@ -210,6 +229,9 @@ impl Tally {
             };
             if outcome.applied_count > 0 || outcome.status == "applied" {
                 self.wrote.insert(domain);
+            }
+            if outcome.status == "skipped_with_reason" || !outcome.warnings.is_empty() {
+                self.unfinished.insert(domain);
             }
             if to_target
                 && outcome.status == "skipped_with_reason"
@@ -240,19 +262,9 @@ fn page(snapshot: &Value, domain: ConfigSyncDomain) -> Option<&Value> {
     snapshot.get("domains")?.get(domain.as_str())
 }
 
-/// One itemized domain from `from` to `to`: the receiver's index, then the
-/// sender's pages until there is no next one.
-async fn carry_items(
-    from: &Client,
-    to: &Client,
-    domain: ConfigSyncDomain,
-    merge_back: bool,
-    tally: &mut Tally,
-) -> Result<(), ClientError> {
-    let index = to
-        .config_sync_export(&json!({ "domains": [domain], "index_only": true }))
-        .await?;
-    let have: BTreeMap<String, String> = page(&index, domain)
+/// The item keys and hashes in one page of an itemized domain.
+fn listed(snapshot: &Value, domain: ConfigSyncDomain) -> Vec<(String, String)> {
+    page(snapshot, domain)
         .and_then(|p| p.get("items"))
         .and_then(Value::as_array)
         .map(|items| {
@@ -266,24 +278,83 @@ async fn carry_items(
                 })
                 .collect()
         })
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
+
+fn next_of(snapshot: &Value, domain: ConfigSyncDomain) -> Option<String> {
+    page(snapshot, domain)?
+        .get("next")?
+        .as_str()
+        .map(str::to_string)
+}
+
+/// The part of `have` after `after` that fits one request, and the key it
+/// is complete up to when it had to be cut (`None`: it reaches the end).
+fn have_window(
+    have: &BTreeMap<String, String>,
+    after: Option<&String>,
+) -> (BTreeMap<String, String>, Option<String>) {
+    let from = after.map_or(Bound::Unbounded, Bound::Excluded);
+    let mut window = BTreeMap::new();
+    let mut bytes = 0usize;
+    for (key, hash) in have.range::<String, _>((from, Bound::Unbounded)) {
+        bytes += key.len() + hash.len() + 8;
+        if bytes > HAVE_WINDOW_BYTES && !window.is_empty() {
+            let until = window.keys().next_back().cloned();
+            return (window, until);
+        }
+        window.insert(key.clone(), hash.clone());
+    }
+    (window, None)
+}
+
+/// One itemized domain from `from` to `to`: the receiver's whole index
+/// (in pages), then the sender's pages until there is no next one, each
+/// told what the receiver holds in the range it covers.
+async fn carry_items(
+    from: &Client,
+    to: &Client,
+    domain: ConfigSyncDomain,
+    merge_back: bool,
+    stop: &AtomicBool,
+    tally: &mut Tally,
+) -> Result<(), ClientError> {
+    let mut have: BTreeMap<String, String> = BTreeMap::new();
     let mut after: Option<String> = None;
     loop {
-        let mut request = json!({ "domains": [domain], "have": have });
+        live(stop)?;
+        let mut request = json!({ "domains": [domain], "index_only": true });
         if let Some(after) = &after {
             request["after"] = Value::String(after.clone());
         }
+        let index = to.config_sync_export(&request).await?;
+        have.extend(listed(&index, domain));
+        let next = next_of(&index, domain);
+        // A cursor that does not move would loop forever.
+        if next.is_none() || next <= after {
+            break;
+        }
+        after = next;
+    }
+    let mut after: Option<String> = None;
+    loop {
+        live(stop)?;
+        let (window, until) = have_window(&have, after.as_ref());
+        let mut request = json!({ "domains": [domain], "have": window });
+        if let Some(after) = &after {
+            request["after"] = Value::String(after.clone());
+        }
+        if let Some(until) = &until {
+            request["until"] = Value::String(until.clone());
+        }
         let snapshot = from.config_sync_export(&request).await?;
-        let next = page(&snapshot, domain)
-            .and_then(|p| p.get("next"))
-            .and_then(Value::as_str)
-            .map(str::to_string);
+        let next = next_of(&snapshot, domain);
+        live(stop)?;
         tally.add(
             to.config_sync_apply(&snapshot, &[domain], merge_back)
                 .await?,
             !merge_back,
         );
-        // A cursor that does not move would loop forever.
         if next.is_none() || next <= after {
             return Ok(());
         }
@@ -299,7 +370,9 @@ pub async fn sync_once(
     target: &Client,
     excluded: &BTreeSet<ConfigSyncDomain>,
     mut memo: SyncMemo,
+    stop: &AtomicBool,
 ) -> Result<(SyncOutcome, SyncMemo), ClientError> {
+    live(stop)?;
     let ours = match source.config_sync_manifest().await {
         Ok(manifest) => manifest,
         Err(e) if e.is_not_found() => return Ok((SyncOutcome::Unsupported(Side::Source), memo)),
@@ -322,14 +395,17 @@ pub async fn sync_once(
     let mut tally = Tally::default();
     let (paged, plain): (Vec<_>, Vec<_>) = domains.iter().copied().partition(|d| d.itemized());
     if !plain.is_empty() {
+        live(stop)?;
         let snapshot = source
             .config_sync_export(&json!({ "domains": plain }))
             .await?;
+        live(stop)?;
         tally.add(
             target.config_sync_apply(&snapshot, &plain, false).await?,
             true,
         );
         for domain in plain.iter().copied().filter(|d| d.two_way()) {
+            live(stop)?;
             let back = target
                 .config_sync_export(&json!({ "domains": [domain] }))
                 .await?;
@@ -340,13 +416,15 @@ pub async fn sync_once(
         }
     }
     for domain in paged {
-        carry_items(source, target, domain, false, &mut tally).await?;
+        carry_items(source, target, domain, false, stop, &mut tally).await?;
         if domain.two_way() {
-            carry_items(target, source, domain, true, &mut tally).await?;
+            carry_items(target, source, domain, true, stop, &mut tally).await?;
         }
     }
     for domain in &domains {
-        if tally.wrote.contains(domain) {
+        // Settled only when a pass ran clean and still wrote nothing: the
+        // difference is then one the handlers keep on purpose.
+        if tally.wrote.contains(domain) || tally.unfinished.contains(domain) {
             memo.remove(domain);
         } else if let (Some(a), Some(b)) = (ours.hashes.get(domain), theirs.hashes.get(domain)) {
             memo.insert(*domain, (a.clone(), b.clone()));
@@ -449,6 +527,76 @@ mod tests {
         );
         assert_eq!(tally.report.restart_required, vec!["budget".to_string()]);
         assert_eq!(tally.report.warnings.len(), 1);
+    }
+
+    #[test]
+    fn a_failed_or_warned_domain_is_unfinished_so_it_is_carried_again() {
+        let report: RawReport = serde_json::from_value(json!({
+            "domains": {
+                "memory": {"status": "skipped_unchanged", "applied_count": 0,
+                           "warnings": ["MEMORY.md changed while syncing; it is taken next time"]},
+                "skills": {"status": "skipped_with_reason", "reason": "store is down",
+                           "applied_count": 0},
+                "prompts": {"status": "skipped_unchanged", "applied_count": 0}
+            }
+        }))
+        .expect("report");
+        let mut tally = Tally::default();
+        tally.add(report, true);
+        assert!(tally.wrote.is_empty());
+        assert_eq!(
+            tally.unfinished,
+            BTreeSet::from([ConfigSyncDomain::Skills, ConfigSyncDomain::Memory])
+        );
+    }
+
+    #[test]
+    fn a_long_receiver_index_is_named_in_windows_that_fit_a_request() {
+        let have: BTreeMap<String, String> = (0..3_000)
+            .map(|n| {
+                (
+                    format!("notes/{n:05}-{}", "x".repeat(400)),
+                    "sha256:h".to_string(),
+                )
+            })
+            .collect();
+        let mut after: Option<String> = None;
+        let mut seen = 0;
+        let mut windows = 0;
+        loop {
+            let (window, until) = have_window(&have, after.as_ref());
+            let bytes: usize = window.iter().map(|(k, h)| k.len() + h.len() + 8).sum();
+            assert!(bytes <= HAVE_WINDOW_BYTES, "{bytes}");
+            assert!(!window.is_empty());
+            seen += window.len();
+            windows += 1;
+            // The window is complete up to `until`, where the next begins.
+            assert_eq!(
+                until.as_ref(),
+                until.as_ref().and(window.keys().next_back())
+            );
+            match until {
+                Some(until) => after = Some(until),
+                None => break,
+            }
+        }
+        assert_eq!(seen, 3_000);
+        assert!(windows > 1);
+        // A short index is one window with no cut.
+        let small = BTreeMap::from([("a".to_string(), "h".to_string())]);
+        assert_eq!(have_window(&small, None), (small.clone(), None));
+        assert_eq!(
+            have_window(&small, Some(&"a".to_string())),
+            (BTreeMap::new(), None)
+        );
+    }
+
+    #[test]
+    fn a_stopped_pass_sends_nothing_further() {
+        let stop = AtomicBool::new(false);
+        assert!(live(&stop).is_ok());
+        stop.store(true, Ordering::Relaxed);
+        assert!(live(&stop).is_err());
     }
 
     #[test]

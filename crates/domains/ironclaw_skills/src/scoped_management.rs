@@ -16,7 +16,7 @@ use crate::{
     SkillUpdateRequest, SkillUpdateResult, install_skill, list_skills,
     management::{
         SKILL_FILE_NAME, SkillBundleSnapshot, USER_SKILLS_ROOT, capture_skill_bundle,
-        restore_skill_bundle,
+        replace_skill_bundle, restore_skill_bundle,
     },
     read_skill_content, remove_skill, search_skills, update_skill,
 };
@@ -173,43 +173,17 @@ impl ScopedSkillManagementPort {
     }
 
     /// Put a whole bundle in place of the skill of that name, or create it
-    /// (configuration sync's apply). The bundle must hold a `SKILL.md`. When
-    /// writing the new bundle fails, the one it replaced is put back.
+    /// (configuration sync's apply). The bundle must hold a `SKILL.md`.
+    /// Nothing is removed before the new files are written, so an
+    /// interrupted replacement leaves a skill that still loads.
     pub async fn replace_bundle_for_scope(
         &self,
         scope: ResourceScope,
         name: &str,
         files: Vec<(String, Vec<u8>)>,
     ) -> Result<(), ScopedSkillManagementError> {
-        if !files.iter().any(|(path, _)| path == SKILL_FILE_NAME) {
-            return Err(
-                SkillManagementError::new(crate::SkillManagementErrorKind::InvalidSkill).into(),
-            );
-        }
         let context = self.context_for_scope(scope)?;
-        let previous = match capture_skill_bundle(&context, name).await {
-            Ok(bundle) => Some(bundle),
-            Err(error) if error.kind() == crate::SkillManagementErrorKind::NotFound => None,
-            Err(error) => return Err(error.into()),
-        };
-        if previous.is_some() {
-            remove_skill(&context, SkillRemoveRequest { name }).await?;
-        }
-        match restore_skill_bundle(&context, name, SkillBundleSnapshot::from_files(files)).await {
-            Ok(_) => Ok(()),
-            Err(error) => {
-                if let Some(previous) = previous
-                    && let Err(undo) = restore_skill_bundle(&context, name, previous).await
-                {
-                    return Err(SkillManagementError::with_reason(
-                        error.kind(),
-                        format!("replacing the skill failed ({error:?}) and the previous one was not put back ({undo:?})"),
-                    )
-                    .into());
-                }
-                Err(error.into())
-            }
-        }
+        Ok(replace_skill_bundle(&context, name, SkillBundleSnapshot::from_files(files)).await?)
     }
 
     pub async fn update_for_scope(

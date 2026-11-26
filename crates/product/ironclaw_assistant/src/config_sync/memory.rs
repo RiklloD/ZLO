@@ -33,6 +33,8 @@ use super::{
 const DOMAIN: ConfigSyncDomain = ConfigSyncDomain::Memory;
 /// Where the receiver's text goes when both sides changed a document.
 pub const CONFLICTS_ROOT: &str = "sync-conflicts";
+/// Folders tried for one conflict copy before the document is left alone.
+const CONFLICT_SLOTS: usize = 4;
 /// How long a computed index answers manifests before documents are read
 /// again. Short: it only spares the reads when several computers are
 /// checked at the same moment; an edit must show at the next check.
@@ -48,15 +50,32 @@ pub trait MemorySyncBaseStore: Send + Sync {
         peer_environment_id: &str,
     ) -> Result<BTreeMap<String, String>, ConfigSyncError>;
 
-    async fn save(
+    /// Add `changes` to what is recorded for that computer, keeping every
+    /// entry another pass recorded meanwhile.
+    async fn record(
         &self,
         caller: &ProductSurfaceCaller,
         peer_environment_id: &str,
-        base: &BTreeMap<String, String>,
+        changes: &BTreeMap<String, String>,
     ) -> Result<(), ConfigSyncError>;
 }
 
-type Index = BTreeMap<String, String>;
+/// One document here: its content digest (the item hash) and the
+/// provider's own token for that content, which a conditional write names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Held {
+    hash: String,
+    token: String,
+}
+
+type Index = BTreeMap<String, Held>;
+
+fn hashes(index: &Index) -> BTreeMap<String, String> {
+    index
+        .iter()
+        .map(|(path, held)| (path.clone(), held.hash.clone()))
+        .collect()
+}
 
 pub struct MemoryDomainHandler {
     documents: Arc<dyn MemoryDocumentsSource>,
@@ -115,7 +134,13 @@ impl MemoryDomainHandler {
         for entry in self.documents.tree(caller).await.map_err(store_error)? {
             match self.documents.read(caller, &entry.path).await {
                 Ok(document) => {
-                    index.insert(entry.path, items::sha256(document.content.as_bytes()));
+                    index.insert(
+                        entry.path,
+                        Held {
+                            hash: items::sha256(document.content.as_bytes()),
+                            token: document.content_hash,
+                        },
+                    );
                 }
                 // Gone between the listing and the read.
                 Err(error) => {
@@ -128,20 +153,16 @@ impl MemoryDomainHandler {
         Ok(index)
     }
 
-    /// Write `content` at `path` over what is there now (`None`: nothing).
-    /// `Ok(false)`: it changed under us; nothing was written.
+    /// Write `content` at `path` only over the version `over` names (`None`:
+    /// only where nothing is). `Ok(false)`: something else is there now and
+    /// nothing was written.
     async fn put(
         &self,
         caller: &ProductSurfaceCaller,
         path: &str,
         content: &str,
-        exists: bool,
+        over: Option<&Held>,
     ) -> Result<bool, ProductSurfaceError> {
-        let expected_content_hash = if exists {
-            Some(self.documents.read(caller, path).await?.content_hash)
-        } else {
-            None
-        };
         let written = self
             .documents
             .write(
@@ -149,11 +170,42 @@ impl MemoryDomainHandler {
                 MemoryWriteRequest {
                     path: path.to_string(),
                     content: content.to_string(),
-                    expected_content_hash,
+                    expected_content_hash: over.map(|held| held.token.clone()),
                 },
             )
             .await?;
         Ok(written.outcome == MemoryPageWriteOutcome::Written)
+    }
+
+    /// Keep `text` (this computer's version of `path`, digest `hash`)
+    /// beside the document before it is replaced. `Some(where)` only once
+    /// a copy with exactly that text is confirmed to exist; an existing
+    /// document with other text is never written over.
+    async fn keep_aside(
+        &self,
+        caller: &ProductSurfaceCaller,
+        held: &Index,
+        path: &str,
+        hash: &str,
+        text: &str,
+    ) -> Option<String> {
+        for attempt in 0..CONFLICT_SLOTS {
+            let aside = conflict_path(path, hash, attempt)?;
+            match held.get(&aside) {
+                Some(existing) if existing.hash == hash => return Some(aside),
+                // Someone changed an earlier copy: it is theirs now.
+                Some(_) => continue,
+                None => match self.put(caller, &aside, text, None).await {
+                    Ok(true) => return Some(aside),
+                    Ok(false) => continue,
+                    Err(error) => {
+                        tracing::debug!(%aside, %error, "config sync: conflict copy not written");
+                        return None;
+                    }
+                },
+            }
+        }
+        None
     }
 }
 
@@ -166,14 +218,31 @@ fn store_error(error: ProductSurfaceError) -> ConfigSyncError {
 
 /// Where the receiver's version of `path` is kept: its own content names
 /// the folder, so the same conflict lands in the same place on a retry.
-fn conflict_path(path: &str, held_hash: &str) -> Option<String> {
+/// `slot` above zero names the next folder, for when that place is taken
+/// by other text.
+fn conflict_path(path: &str, held_hash: &str, slot: usize) -> Option<String> {
     let short: String = held_hash
         .trim_start_matches("sha256:")
         .chars()
         .take(12)
         .collect();
-    let out = format!("{CONFLICTS_ROOT}/{short}/{path}");
+    let folder = if slot == 0 {
+        short
+    } else {
+        format!("{short}-{}", slot + 1)
+    };
+    let out = format!("{CONFLICTS_ROOT}/{folder}/{path}");
     (out.len() <= MAX_MEMORY_PATH_BYTES).then_some(out)
+}
+
+/// A removal here leaves the text in the provider's archive tree
+/// (`archive/<when>/<path>`): the same text there means the document was
+/// archived on this computer, not that it never arrived.
+fn archived_here(held: &Index, path: &str, hash: &str) -> bool {
+    let tail = format!("/{path}");
+    held.iter().any(|(at, document)| {
+        at.starts_with("archive/") && at.ends_with(&tail) && document.hash == hash
+    })
 }
 
 /// What to do with one incoming document.
@@ -212,7 +281,7 @@ impl ConfigSyncDomainHandler for MemoryDomainHandler {
         &self,
         ctx: &ConfigSyncContext,
     ) -> Result<ConfigSyncDomainDigest, ConfigSyncError> {
-        let index = self.index(&ctx.caller, false).await?;
+        let index = hashes(&self.index(&ctx.caller, false).await?);
         Ok(ConfigSyncDomainDigest {
             hash: items::domain_hash(&index),
             updated_at: None,
@@ -224,12 +293,22 @@ impl ConfigSyncDomainHandler for MemoryDomainHandler {
         &self,
         ctx: &ConfigSyncContext,
     ) -> Result<ConfigSyncDomainPayload, ConfigSyncError> {
-        let index = self.index(&ctx.caller, true).await?;
+        // A later page of the same pass reads the index the first one made.
+        let index = hashes(&self.index(&ctx.caller, ctx.page.after.is_none()).await?);
         let page = items::page(&index, &ctx.page, |path| {
             let documents = Arc::clone(&self.documents);
             let caller = ctx.caller.clone();
+            let listed = index.get(&path).cloned();
             async move {
                 match documents.read(&caller, &path).await {
+                    // Changed since it was listed: its hash would name other
+                    // bytes. It is taken on the next pass.
+                    Ok(document)
+                        if listed.as_deref()
+                            != Some(items::sha256(document.content.as_bytes()).as_str()) =>
+                    {
+                        Ok(None)
+                    }
                     Ok(document) => Ok(Some(vec![(String::new(), document.content.into_bytes())])),
                     Err(error) => {
                         tracing::debug!(%path, %error, "config sync: memory document not exported");
@@ -257,13 +336,21 @@ impl ConfigSyncDomainHandler for MemoryDomainHandler {
                     "a document path is too long",
                 ));
             }
-            if let Some(files) = items::decode(DOMAIN, item)?
-                && (files.len() != 1 || std::str::from_utf8(&files[0].1).is_err())
-            {
-                return Err(ConfigSyncError::validation(
-                    "memory.items",
-                    format!("document `{}` is not one UTF-8 text", item.key),
-                ));
+            if let Some(files) = items::decode(DOMAIN, item)? {
+                if files.len() != 1 || std::str::from_utf8(&files[0].1).is_err() {
+                    return Err(ConfigSyncError::validation(
+                        "memory.items",
+                        format!("document `{}` is not one UTF-8 text", item.key),
+                    ));
+                }
+                // The hash decides the merge and is what gets remembered:
+                // it must be the hash of the text that came with it.
+                if items::sha256(&files[0].1) != item.hash {
+                    return Err(ConfigSyncError::validation(
+                        "memory.items",
+                        format!("document `{}` does not match its hash", item.key),
+                    ));
+                }
             }
         }
         Ok(())
@@ -288,8 +375,9 @@ impl ConfigSyncDomainHandler for MemoryDomainHandler {
         };
         let caller = &ctx.caller;
         let held = self.index(caller, true).await?;
-        let mut base = self.base.load(caller, peer).await?;
-        let before = base.clone();
+        let base = self.base.load(caller, peer).await?;
+        // What this pass and the other computer now agree on.
+        let mut agreed: BTreeMap<String, String> = BTreeMap::new();
         let (mut applied, mut skipped) = (0u64, 0u64);
         let mut warnings: Vec<String> = page
             .too_large
@@ -303,9 +391,16 @@ impl ConfigSyncDomainHandler for MemoryDomainHandler {
                 .and_then(|mut files| files.pop())
                 .and_then(|(_, bytes)| String::from_utf8(bytes).ok());
             let mine = held.get(path);
-            let mut todo = step(&item.hash, mine, base.get(path), content.is_some());
+            let mut todo = step(
+                &item.hash,
+                mine.map(|held| &held.hash),
+                base.get(path),
+                content.is_some(),
+            );
             if todo == Step::Agree {
-                base.insert(path.to_string(), item.hash.clone());
+                if base.get(path) != Some(&item.hash) {
+                    agreed.insert(path.to_string(), item.hash.clone());
+                }
                 skipped += 1;
                 continue;
             }
@@ -313,10 +408,25 @@ impl ConfigSyncDomainHandler for MemoryDomainHandler {
                 skipped += 1;
                 continue;
             };
-            let mut keep_copy = None;
-            if todo == Step::Compare {
+            // Never agreed on and archived here with this very text: it was
+            // removed on this computer, and stays removed.
+            if todo == Step::Create && archived_here(&held, path, &item.hash) {
+                agreed.insert(path.to_string(), item.hash.clone());
+                skipped += 1;
+                continue;
+            }
+            if let (Step::Compare, Some(mine)) = (&todo, mine) {
                 let existing = match self.documents.read(caller, path).await {
-                    Ok(document) => document.content,
+                    // The text the decision is made on must be the text
+                    // that was listed, which the write below names.
+                    Ok(document) if document.content_hash == mine.token => document.content,
+                    Ok(_) => {
+                        warnings.push(format!(
+                            "{path} changed while syncing; it is taken next time"
+                        ));
+                        skipped += 1;
+                        continue;
+                    }
                     Err(error) => {
                         warnings.push(format!("{path} was not synced: {error}"));
                         skipped += 1;
@@ -328,40 +438,38 @@ impl ConfigSyncDomainHandler for MemoryDomainHandler {
                 } else if existing.starts_with(&content) || ctx.merge_back {
                     Step::Keep
                 } else {
-                    keep_copy = Some(existing);
-                    Step::Replace
+                    // This computer's text is confirmed kept before the
+                    // document is touched.
+                    match self
+                        .keep_aside(caller, &held, path, &mine.hash, &existing)
+                        .await
+                    {
+                        Some(aside) => {
+                            warnings.push(format!(
+                                "{path} changed on both computers; this computer's version is kept at {aside}"
+                            ));
+                            Step::Replace
+                        }
+                        None => {
+                            warnings.push(format!(
+                                "{path} changed on both computers and this computer's version could not be kept aside; left as it is here"
+                            ));
+                            Step::Keep
+                        }
+                    }
                 };
             }
             if todo == Step::Keep {
                 skipped += 1;
                 continue;
             }
-            // The receiver's own text is put aside before it is replaced.
-            if let (Some(existing), Some(mine)) = (keep_copy, mine) {
-                let Some(aside) = conflict_path(path, mine) else {
-                    warnings.push(format!(
-                        "{path} changed on both computers and its path is too long to keep both; left as it is here"
-                    ));
-                    skipped += 1;
-                    continue;
-                };
-                match self.put(caller, &aside, &existing, held.contains_key(&aside)).await {
-                    Ok(_) => warnings.push(format!(
-                        "{path} changed on both computers; this computer's version is kept at {aside}"
-                    )),
-                    Err(error) => {
-                        warnings.push(format!("{path} was not synced: {error}"));
-                        skipped += 1;
-                        continue;
-                    }
-                }
-            }
-            match self
-                .put(caller, path, &content, todo == Step::Replace)
-                .await
-            {
+            // Only over the version the decision was made on: an edit that
+            // landed meanwhile makes the write fail, and the next pass
+            // decides again with that edit in view.
+            let over = if todo == Step::Replace { mine } else { None };
+            match self.put(caller, path, &content, over).await {
                 Ok(true) => {
-                    base.insert(path.to_string(), item.hash.clone());
+                    agreed.insert(path.to_string(), item.hash.clone());
                     applied += 1;
                 }
                 Ok(false) => {
@@ -381,8 +489,8 @@ impl ConfigSyncDomainHandler for MemoryDomainHandler {
         if applied > 0 {
             self.forget_index();
         }
-        if base != before {
-            self.base.save(caller, peer, &base).await?;
+        if !agreed.is_empty() {
+            self.base.record(caller, peer, &agreed).await?;
         }
         let mut result = if applied == 0 {
             DomainApplyResult::unchanged(skipped)
@@ -423,11 +531,15 @@ mod tests {
     #[test]
     fn a_conflict_copy_is_named_by_the_content_it_keeps() {
         assert_eq!(
-            conflict_path("notes/plan.md", "sha256:0123456789abcdef0123").as_deref(),
+            conflict_path("notes/plan.md", "sha256:0123456789abcdef0123", 0).as_deref(),
             Some("sync-conflicts/0123456789ab/notes/plan.md")
         );
         assert_eq!(
-            conflict_path(&"x".repeat(MAX_MEMORY_PATH_BYTES), "sha256:ab"),
+            conflict_path("notes/plan.md", "sha256:0123456789abcdef0123", 1).as_deref(),
+            Some("sync-conflicts/0123456789ab-2/notes/plan.md")
+        );
+        assert_eq!(
+            conflict_path(&"x".repeat(MAX_MEMORY_PATH_BYTES), "sha256:ab", 0),
             None
         );
     }

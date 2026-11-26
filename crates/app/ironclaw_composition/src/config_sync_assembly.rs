@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use ironclaw_assistant::config_sync::approvals::ApprovalsDomainHandler;
+use ironclaw_assistant::config_sync::cli_home::CliHomeDomainHandler;
 use ironclaw_assistant::config_sync::config::ConfigDomainHandler;
 use ironclaw_assistant::config_sync::memory::MemoryDomainHandler;
 use ironclaw_assistant::config_sync::memory_base::SettingsMemorySyncBase;
@@ -33,7 +34,7 @@ pub(crate) fn wrap(
     let mut service = ConfigSyncService::new(
         Arc::new(runtime.environment_access_store()),
         home.path().display().to_string(),
-        user_home,
+        user_home.clone(),
     )
     .with_handler(Arc::new(ConfigDomainHandler::new(home.config_file_path())))
     .with_handler(Arc::new(ApprovalsDomainHandler::new(
@@ -52,6 +53,10 @@ pub(crate) fn wrap(
     .with_handler(Arc::new(SkillUsageDomainHandler::new(
         runtime.skill_usage.clone(),
     )));
+    // The coding-agent CLIs' own rules and skills files.
+    if !user_home.is_empty() {
+        service = service.with_handler(Arc::new(CliHomeDomainHandler::for_home(user_home.into())));
+    }
     // Only the native provider's memory is documents this host can carry.
     if let Some(documents) = runtime.memory_page.documents.clone() {
         service = service.with_handler(Arc::new(MemoryDomainHandler::new(

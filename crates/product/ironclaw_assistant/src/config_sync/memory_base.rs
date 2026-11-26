@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use ironclaw_filesystem::{FilesystemError, RootFilesystem};
+use ironclaw_filesystem::{CasExpectation, Entry, FilesystemError, RootFilesystem};
 use ironclaw_host_api::path::VirtualPath;
 use ironclaw_product_contracts::config_sync::ConfigSyncDomain;
 use ironclaw_product_contracts::surface::ProductSurfaceCaller;
@@ -16,6 +16,8 @@ use super::ConfigSyncError;
 use super::memory::MemorySyncBaseStore;
 
 const MEMORY_BASE_ROOT: &str = "/system/settings/config-sync/memory-base";
+/// Tries at writing over an unchanged version before giving up.
+const RECORD_ATTEMPTS: usize = 6;
 
 pub struct SettingsMemorySyncBase<F> {
     filesystem: Arc<F>,
@@ -81,21 +83,48 @@ impl<F: RootFilesystem> MemorySyncBaseStore for SettingsMemorySyncBase<F> {
         })
     }
 
-    async fn save(
+    async fn record(
         &self,
         caller: &ProductSurfaceCaller,
         peer_environment_id: &str,
-        base: &BTreeMap<String, String>,
+        changes: &BTreeMap<String, String>,
     ) -> Result<(), ConfigSyncError> {
         let path = base_path(caller, peer_environment_id)?;
-        let bytes = serde_json::to_vec(base).map_err(|source| ConfigSyncError::Serialization {
+        // Read, add this pass's entries, write only over the version read:
+        // another pass that wrote meanwhile is read again, never undone.
+        for _ in 0..RECORD_ATTEMPTS {
+            let (mut base, expected) = match self.filesystem.get(&path).await.map_err(base_error)? {
+                Some(held) => (
+                    serde_json::from_slice::<BTreeMap<String, String>>(&held.entry.body).map_err(
+                        |source| ConfigSyncError::Serialization {
+                            domain: ConfigSyncDomain::Memory,
+                            source,
+                        },
+                    )?,
+                    CasExpectation::Version(held.version),
+                ),
+                None => (BTreeMap::new(), CasExpectation::Absent),
+            };
+            base.extend(changes.iter().map(|(k, v)| (k.clone(), v.clone())));
+            let body =
+                serde_json::to_vec(&base).map_err(|source| ConfigSyncError::Serialization {
+                    domain: ConfigSyncDomain::Memory,
+                    source,
+                })?;
+            match self
+                .filesystem
+                .put(&path, Entry::bytes(body), expected)
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(FilesystemError::VersionMismatch { .. }) => continue,
+                Err(error) => return Err(base_error(error)),
+            }
+        }
+        Err(ConfigSyncError::Store {
             domain: ConfigSyncDomain::Memory,
-            source,
-        })?;
-        self.filesystem
-            .write_file(&path, &bytes)
-            .await
-            .map_err(base_error)
+            reason: "the memory sync record kept changing; it is written next time".to_string(),
+        })
     }
 }
 
@@ -121,8 +150,12 @@ mod tests {
         let alice = caller("alice");
         assert!(store.load(&alice, "box").await.expect("load").is_empty());
         let base = BTreeMap::from([("MEMORY.md".to_string(), "sha256:1".to_string())]);
-        store.save(&alice, "box", &base).await.expect("save");
-        assert_eq!(store.load(&alice, "box").await.expect("load"), base);
+        store.record(&alice, "box", &base).await.expect("record");
+        // A later pass adds to what an earlier one recorded.
+        let more = BTreeMap::from([("notes/a.md".to_string(), "sha256:2".to_string())]);
+        store.record(&alice, "box", &more).await.expect("record");
+        let both: BTreeMap<_, _> = base.clone().into_iter().chain(more).collect();
+        assert_eq!(store.load(&alice, "box").await.expect("load"), both);
         assert!(store.load(&alice, "studio").await.expect("load").is_empty());
         assert!(
             store

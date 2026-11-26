@@ -536,5 +536,26 @@ Phases 1, 2 and 5 are in. What differs from the sketch above:
   manifest; a domain whose store fails on apply is reported as skipped and
   the others still apply.
 
+- **CLI rules files (phase 6).** `cli_home`: the files each coding-agent
+  CLI reads by itself (global instructions, skills, custom commands), listed
+  per CLI in `ironclaw_cli_providers::user_rules` and nowhere else. One
+  file per item, keyed `<root id>/<path>`; one way, Mac wins, nothing
+  deleted, hidden files left out, links followed only inside the root or
+  the home. Logins, tokens and settings files are never listed.
+- **After review (GPT, 2026-11-26).** Memory writes name the version the
+  merge decided on, so an edit that lands mid-pass fails the write instead
+  of being lost; a conflict copy is create-only and confirmed before the
+  original is replaced; a document archived on one side before any pass is
+  recognised by its archived text and not brought back; the base is
+  recorded with a versioned write; an exported document must match its
+  hash. A skill is replaced by writing over it and deleting stale files
+  last. Tool overrides that exist only on the target are kept. An address
+  with a sign-in in it is redacted on export and its section skipped on
+  apply. The carrier stops when sync is switched off, pages the receiver's
+  index, bounds what it names per request, and only remembers a difference
+  as settled after a clean pass. A saved thread title sends an inbox hint.
+  Not done: tolerating fields a newer backend adds to a payload (a
+  mismatch is reported as a failed pass; update the older side).
+
 Left: phase 3 (provider catalog and keys), phase 4 (extensions, hooks,
-automations), phase 6 (CLI home rules files).
+automations).

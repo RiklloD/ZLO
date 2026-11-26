@@ -28,6 +28,8 @@ pub struct PageRequest {
     pub index_only: bool,
     pub have: BTreeMap<String, String>,
     pub after: Option<String>,
+    /// `have` says nothing about keys after this one: the page ends here.
+    pub until: Option<String>,
 }
 
 /// `sha256:<hex>` of bytes.
@@ -145,6 +147,12 @@ where
         if request.after.as_ref().is_some_and(|after| key <= after) {
             continue;
         }
+        if let Some(until) = &request.until
+            && key > until
+        {
+            out.next = Some(until.clone());
+            break;
+        }
         if out.items.len() >= PAGE_ITEMS || carried >= PAGE_CONTENT_BYTES {
             out.next = out.items.last().map(|item| item.key.clone());
             break;
@@ -176,4 +184,92 @@ where
         });
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn index(keys: &[&str]) -> BTreeMap<String, String> {
+        keys.iter()
+            .map(|key| ((*key).to_string(), format!("h-{key}")))
+            .collect()
+    }
+
+    async fn cut(all: &BTreeMap<String, String>, request: PageRequest) -> ItemizedDomainPayload {
+        page(all, &request, |key| async move {
+            Ok(Some(vec![(String::new(), key.into_bytes())]))
+        })
+        .await
+        .expect("page")
+    }
+
+    fn keys(page: &ItemizedDomainPayload) -> Vec<&str> {
+        page.items.iter().map(|item| item.key.as_str()).collect()
+    }
+
+    #[tokio::test]
+    async fn a_page_carries_content_only_for_what_the_receiver_lacks() {
+        let all = index(&["a", "b", "c"]);
+        let request = PageRequest {
+            have: BTreeMap::from([("b".to_string(), "h-b".to_string())]),
+            ..PageRequest::default()
+        };
+        let page = cut(&all, request).await;
+        assert_eq!(keys(&page), ["a", "b", "c"]);
+        assert!(page.items[0].files.is_some());
+        assert!(page.items[1].files.is_none(), "the receiver holds b");
+        assert!(page.items[2].files.is_some());
+        assert_eq!(page.next, None);
+    }
+
+    #[tokio::test]
+    async fn a_page_stops_where_the_receivers_index_window_ends_and_resumes_there() {
+        let all = index(&["a", "b", "c", "d"]);
+        let first = cut(
+            &all,
+            PageRequest {
+                until: Some("b".to_string()),
+                ..PageRequest::default()
+            },
+        )
+        .await;
+        assert_eq!(keys(&first), ["a", "b"]);
+        assert_eq!(first.next.as_deref(), Some("b"));
+        let rest = cut(
+            &all,
+            PageRequest {
+                after: first.next,
+                ..PageRequest::default()
+            },
+        )
+        .await;
+        assert_eq!(keys(&rest), ["c", "d"]);
+        assert_eq!(rest.next, None);
+        // A window that covers everything leaves no cursor behind.
+        let whole = cut(
+            &all,
+            PageRequest {
+                until: Some("z".to_string()),
+                ..PageRequest::default()
+            },
+        )
+        .await;
+        assert_eq!(whole.next, None);
+    }
+
+    #[tokio::test]
+    async fn an_index_lists_every_item_without_content() {
+        let all = index(&["a", "b"]);
+        let page = cut(
+            &all,
+            PageRequest {
+                index_only: true,
+                ..PageRequest::default()
+            },
+        )
+        .await;
+        assert!(page.items.iter().all(|item| item.files.is_none()));
+        assert_eq!(page.hash, domain_hash(&all));
+    }
 }

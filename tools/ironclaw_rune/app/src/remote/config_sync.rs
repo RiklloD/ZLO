@@ -15,6 +15,8 @@
 //! `docs/internal/plans/2026-11-26-zlo-config-sync.md`.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use zlo_client::config_sync::{Side, SyncMemo, SyncOutcome, SyncReport, sync_once};
@@ -47,6 +49,9 @@ struct Row {
     phase: Phase,
     /// The pass in flight; a reply from any other pass is dropped.
     running: Option<u64>,
+    /// Tells the pass in flight to send nothing further (set when this
+    /// row goes: sync switched off, or the computer disconnected).
+    stop: Arc<AtomicBool>,
     checked_at: Option<Instant>,
     /// Checked again on the next [`sync`].
     due: bool,
@@ -96,8 +101,8 @@ pub fn set_enabled(s: &mut State, key: &str, on: bool) {
     });
     if on {
         sync_now(s, &key);
-    } else {
-        s.remote.config_sync.rows.remove(&key);
+    } else if let Some(row) = s.remote.config_sync.rows.remove(&key) {
+        row.stop.store(true, Ordering::Relaxed);
     }
 }
 
@@ -160,10 +165,13 @@ pub fn sync(s: &mut State) {
     let connected: HashSet<&str> = connections.iter().map(|(key, _)| key.as_str()).collect();
     // A computer whose connection went is checked afresh when it is back,
     // and by then it has restarted or not: the note goes with it.
-    s.remote
-        .config_sync
-        .rows
-        .retain(|key, _| connected.contains(key.as_str()));
+    s.remote.config_sync.rows.retain(|key, row| {
+        let stays = connected.contains(key.as_str());
+        if !stays {
+            row.stop.store(true, Ordering::Relaxed);
+        }
+        stays
+    });
     let Some(source) = source else {
         return;
     };
@@ -182,12 +190,14 @@ pub fn sync(s: &mut State) {
         row.running = Some(run);
         row.due = false;
         let memo = row.memo.clone();
+        row.stop = Arc::new(AtomicBool::new(false));
+        let stop = Arc::clone(&row.stop);
         let delivery = s.rt.delivery();
         let from = source.client().clone();
         let key = key.clone();
         // Only clients travel: no backend is dropped off the UI thread.
         target.spawn(move |to| async move {
-            let result = sync_once(&from, &to, &BTreeSet::new(), memo).await;
+            let result = sync_once(&from, &to, &BTreeSet::new(), memo, &stop).await;
             delivery.deliver(move |s, _| finished(s, &key, run, result));
         });
     }
@@ -305,6 +315,19 @@ pub fn line(s: &State, key: &str, label: &str) -> Option<Line> {
                 let (domain, why) = &report.skipped[0];
                 (
                     format!("Settings synced, except {}: {why}", domain_name(*domain)),
+                    Tone::Warn,
+                )
+            }
+            // Something could not be carried, or was kept twice: say which.
+            Some(Phase::Synced(report)) if !report.warnings.is_empty() => {
+                let more = report.warnings.len() - 1;
+                let rest = if more == 0 {
+                    String::new()
+                } else {
+                    format!(" (and {more} more)")
+                };
+                (
+                    format!("Settings synced. Note: {}{rest}", report.warnings[0]),
                     Tone::Warn,
                 )
             }

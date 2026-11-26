@@ -197,16 +197,18 @@ impl MemorySyncBaseStore for Bases {
             .cloned()
             .unwrap_or_default())
     }
-    async fn save(
+    async fn record(
         &self,
         _: &ProductSurfaceCaller,
         peer: &str,
-        base: &BTreeMap<String, String>,
+        changes: &BTreeMap<String, String>,
     ) -> Result<(), ConfigSyncError> {
         self.0
             .lock()
             .expect("bases")
-            .insert(peer.into(), base.clone());
+            .entry(peer.into())
+            .or_default()
+            .extend(changes.clone());
         Ok(())
     }
 }
@@ -363,6 +365,7 @@ async fn leg(
                     index_only: false,
                     have: have.clone(),
                     after: after.clone(),
+                    until: None,
                 },
             )
             .await
@@ -672,5 +675,182 @@ async fn an_itemized_domain_is_never_part_of_an_everything_export() {
     assert_eq!(
         all.domains.keys().copied().collect::<Vec<_>>(),
         [ConfigSyncDomain::SkillUsage]
+    );
+}
+
+#[tokio::test]
+async fn an_edit_that_lands_during_a_pass_is_never_written_over() {
+    let (mac, boxed) = (host(MAC), host(BOX));
+    mac.documents.set("MEMORY.md", "v0\n");
+    assert!(sync(&mac, &boxed, MEMORY).await.is_empty());
+
+    // The Mac moves on to v1; the page that carries it is cut, and before
+    // it is applied an agent on the box writes its own v2.
+    mac.documents.set("MEMORY.md", "v1 from the Mac\n");
+    let snapshot = mac
+        .service
+        .export(
+            caller(),
+            ConfigSyncExportRequest {
+                domains: vec![MEMORY],
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("export");
+    boxed.documents.set("MEMORY.md", "v2 from the box\n");
+    let report = boxed
+        .service
+        .apply(
+            caller(),
+            ConfigSyncApplyRequest {
+                snapshot,
+                domains: Vec::new(),
+                merge_back: false,
+            },
+        )
+        .await
+        .expect("apply");
+    // Seen with the edit in view: both changed, so the box's text is kept
+    // aside before the Mac's takes the path. Nothing is lost.
+    let outcome = &report.domains[&MEMORY];
+    assert!(
+        outcome
+            .warnings
+            .iter()
+            .any(|w| w.contains("changed on both")),
+        "{outcome:?}"
+    );
+    let kept: Vec<String> = boxed
+        .documents
+        .paths()
+        .into_iter()
+        .filter(|path| path.starts_with("sync-conflicts/"))
+        .collect();
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert_eq!(
+        boxed.documents.get(&kept[0]).as_deref(),
+        Some("v2 from the box\n")
+    );
+}
+
+#[tokio::test]
+async fn an_edited_conflict_copy_is_never_written_over() {
+    let (mac, boxed) = (host(MAC), host(BOX));
+    mac.documents.set("notes/plan.md", "v1\n");
+    assert!(sync(&mac, &boxed, MEMORY).await.is_empty());
+    mac.documents.set("notes/plan.md", "the Mac's plan\n");
+    boxed.documents.set("notes/plan.md", "the box's plan\n");
+    assert_eq!(sync(&mac, &boxed, MEMORY).await.len(), 1);
+    let copy = boxed
+        .documents
+        .paths()
+        .into_iter()
+        .find(|path| path.starts_with("sync-conflicts/"))
+        .expect("copy");
+
+    // An agent rewrites the copy, and later the same conflict happens
+    // again with the same losing text.
+    for host in [&mac, &boxed] {
+        host.documents
+            .set(&copy, "the agent's notes on the conflict\n");
+    }
+    boxed.documents.set("notes/plan.md", "the box's plan\n");
+    mac.documents.set("notes/plan.md", "the Mac's newer plan\n");
+    let warnings = sync(&mac, &boxed, MEMORY).await;
+    assert!(
+        warnings.iter().any(|w| w.contains("changed on both")),
+        "{warnings:?}"
+    );
+    assert_eq!(
+        boxed.documents.get(&copy).as_deref(),
+        Some("the agent's notes on the conflict\n"),
+        "the edited copy is theirs"
+    );
+    let copies: Vec<String> = boxed
+        .documents
+        .paths()
+        .into_iter()
+        .filter(|path| path.starts_with("sync-conflicts/"))
+        .collect();
+    assert_eq!(copies.len(), 2, "{copies:?}");
+    assert!(
+        copies
+            .iter()
+            .any(|path| boxed.documents.get(path).as_deref() == Some("the box's plan\n"))
+    );
+}
+
+#[tokio::test]
+async fn a_document_archived_before_the_computers_ever_synced_stays_archived() {
+    let (mac, boxed) = (host(MAC), host(BOX));
+    // Both already hold the same document; no pass has recorded that yet.
+    mac.documents.set("notes/old.md", "old\n");
+    // The box archived its copy (the provider keeps it under archive/).
+    boxed
+        .documents
+        .set("archive/20261126T100000Z/notes/old.md", "old\n");
+
+    assert!(sync(&mac, &boxed, MEMORY).await.is_empty());
+    assert_eq!(boxed.documents.get("notes/old.md"), None, "resurrected");
+    // And it stays that way on the next pass.
+    assert!(sync(&mac, &boxed, MEMORY).await.is_empty());
+    assert_eq!(boxed.documents.get("notes/old.md"), None);
+}
+
+#[tokio::test]
+async fn a_replaced_skill_loses_its_stale_files_and_keeps_loading() {
+    let (mac, boxed) = (host(MAC), host(BOX));
+    let files = |extra: &str| {
+        vec![
+            ("SKILL.md".to_string(), DEPLOY.as_bytes().to_vec()),
+            (format!("scripts/{extra}.sh"), b"echo hi\n".to_vec()),
+        ]
+    };
+    boxed
+        .skills
+        .replace_bundle_for_scope(scope(), "deploy", files("old"))
+        .await
+        .expect("first bundle");
+    mac.skills
+        .replace_bundle_for_scope(scope(), "deploy", files("new"))
+        .await
+        .expect("mac bundle");
+    assert!(
+        sync(&mac, &boxed, ConfigSyncDomain::Skills)
+            .await
+            .is_empty()
+    );
+    let mut names: Vec<String> = boxed
+        .skills
+        .export_bundle_for_scope(scope(), "deploy")
+        .await
+        .expect("bundle")
+        .into_iter()
+        .map(|(path, _)| path)
+        .collect();
+    names.sort();
+    assert_eq!(names, ["SKILL.md", "scripts/new.sh"]);
+    // A bundle with a path that leaves the skill is refused before anything
+    // of the skill in place is touched.
+    let bad = vec![
+        ("SKILL.md".to_string(), DEPLOY.as_bytes().to_vec()),
+        ("../escape.sh".to_string(), b"x".to_vec()),
+    ];
+    assert!(
+        boxed
+            .skills
+            .replace_bundle_for_scope(scope(), "deploy", bad)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        boxed
+            .skills
+            .export_bundle_for_scope(scope(), "deploy")
+            .await
+            .expect("bundle")
+            .len(),
+        2
     );
 }
