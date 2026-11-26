@@ -15,7 +15,9 @@ use crate::workspace::inbox::{
     branch_tail, delete_row, mark_row, open_row, settle_blocker, settle_row, short_age,
     snooze_presets, subagents, title_of, wake_label,
 };
-use crate::workspace::ui::{self, SEMIBOLD, XS, t, tw};
+use crate::workspace::ui::{self, SEMIBOLD, XS, t};
+
+use super::mark::profile_mark;
 use crate::workspace::{message_search, thread_drag};
 
 use super::selected_bg;
@@ -137,10 +139,10 @@ pub(super) fn card(s: &State, tree: &Tree, entry: &Entry<'_>, meta_flags: RowMet
     }
     meta = meta
         .child(profile_mark(
-            p,
+            s,
+            &row_id.computer,
             &row_data.profile_id,
             &name,
-            if active { 1. } else { 0. },
         ))
         .child(
             el().grow(1.0)
@@ -434,10 +436,12 @@ pub(super) fn slim(
                 crate::chat::prewarm::hover(s, &warm_id, inside, tx);
             }
         })
-        .child(
-            el().opacity(0.4)
-                .child(profile_mark(p, &row_data.profile_id, &name, 0.)),
-        )
+        .child(el().opacity(0.4).child(profile_mark(
+            s,
+            &row_id.computer,
+            &row_data.profile_id,
+            &name,
+        )))
         .child(
             el().grow(1.0).min_w(0.0).child(
                 ui::side_tw(
@@ -474,56 +478,6 @@ pub(super) fn slim(
 /// The pen before a drafted row's profile, in the theme's accent.
 pub(in crate::workspace) fn draft_mark(p: &Palette) -> El {
     ui::glyph(&icons::SQUARE_PEN, 14., p.accent)
-}
-
-/// The profile badge: a solid tile in the profile's colour with its two
-/// letters ([`profile_initials`]). `lit` 0 draws the mark at rest, 1 a
-/// touch brighter on hover or open.
-pub(in crate::workspace) fn profile_mark(
-    p: &Palette,
-    profile_id: &str,
-    name: &str,
-    lit: f32,
-) -> El {
-    row()
-        .size(MARK_SIZE, MARK_SIZE)
-        .radius(5.)
-        .fill(profile_color(p, profile_id, lit))
-        .center()
-        .child(tw(profile_initials(name), 8.5, SEMIBOLD, Color::WHITE))
-}
-
-/// The badge's side, also the slot other rows reserve for it.
-pub(in crate::workspace) const MARK_SIZE: f32 = 18.;
-
-/// Two letters for a profile: the first two words' initials ("Business
-/// analytics" → "BA"), else a single word's first two ("Luft" → "LU").
-pub(in crate::workspace) fn profile_initials(name: &str) -> String {
-    let words: Vec<&str> = name
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| !w.is_empty())
-        .collect();
-    let letters: String = match words.as_slice() {
-        [] => return "·".into(),
-        [one] => one.chars().take(2).collect(),
-        [a, b, ..] => a.chars().take(1).chain(b.chars().take(1)).collect(),
-    };
-    letters.to_uppercase()
-}
-
-/// A profile's own color, from its id: one of eight saturated hues, the
-/// same in both themes, so profiles are told apart at a glance. `lit` 1
-/// (hover, selection) lifts it slightly.
-pub(in crate::workspace) fn profile_color(_p: &Palette, profile_id: &str, lit: f32) -> Color {
-    // OKLCH hues: red, orange, green, teal, sky, blue, violet, pink.
-    const HUES: [f32; 8] = [25., 60., 140., 185., 230., 265., 305., 350.];
-    // FNV-1a: its low bits spread well, so neighbours rarely share a hue.
-    let hash = profile_id.bytes().fold(0x811c_9dc5u32, |h, b| {
-        (h ^ b as u32).wrapping_mul(0x0100_0193)
-    });
-    let hue = HUES[hash as usize % HUES.len()].to_radians();
-    let (l, c) = (0.58 + 0.04 * lit, 0.17);
-    Color::from_oklab([l, c * hue.cos(), c * hue.sin(), 1.])
 }
 
 pub(in crate::workspace) fn branch_label(p: &Palette, branch: &str) -> El {
@@ -651,19 +605,5 @@ mod tests {
         assert_eq!(format_elapsed(5), "5s");
         assert_eq!(format_elapsed(153), "2m 33s");
         assert_eq!(format_elapsed(3840), "1h 4m");
-    }
-}
-
-#[cfg(test)]
-mod mark_tests {
-    use super::profile_initials;
-
-    #[test]
-    fn initials_take_two_words_or_two_letters() {
-        assert_eq!(profile_initials("Business analytics"), "BA");
-        assert_eq!(profile_initials("IronClaw Builder"), "IB");
-        assert_eq!(profile_initials("Luft"), "LU");
-        assert_eq!(profile_initials("  x "), "X");
-        assert_eq!(profile_initials("—"), "·");
     }
 }

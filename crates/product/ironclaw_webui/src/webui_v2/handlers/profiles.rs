@@ -1,5 +1,6 @@
 //! Profile routes (stage 3): list, read, create, update and archive
-//! profiles, create a thread on one, and the one-time Hermes import. Each
+//! profiles, read a profile folder's logo, create a thread on one, and the
+//! one-time Hermes import. Each
 //! handler forwards to one `ironclaw_product_contracts::profiles` descriptor;
 //! profiles are always the authenticated caller's own.
 
@@ -33,6 +34,21 @@ pub async fn profile_get(
 ) -> Result<Json<Value>, WebUiV2HttpError> {
     let params = serde_json::json!({ "profile_id": profile_id });
     let view = PROFILE_VIEW.descriptor();
+    Ok(Json(
+        query_product_view(state.services(), caller, view, params, None).await?,
+    ))
+}
+
+/// `GET /api/webchat/v2/profiles/{profile_id}/icon` — the logo in the
+/// profile's folder ([`ProfileIcon`]), found as t3code finds a project's;
+/// `no_profile_icon` when it has none.
+pub async fn profile_icon(
+    State(state): State<WebUiV2State>,
+    Extension(caller): Extension<ProductSurfaceCaller>,
+    Path(profile_id): Path<String>,
+) -> Result<Json<Value>, WebUiV2HttpError> {
+    let params = serde_json::json!({ "profile_id": profile_id });
+    let view = PROFILE_ICON_VIEW.descriptor();
     Ok(Json(
         query_product_view(state.services(), caller, view, params, None).await?,
     ))

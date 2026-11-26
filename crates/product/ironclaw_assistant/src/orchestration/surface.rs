@@ -464,6 +464,13 @@ impl OrchestratedProductSurface {
                     .await,
                 )
             }
+            v if v == PROFILE_ICON_VIEW.id => answer(
+                async {
+                    let req: ProfileRequest = serde_json::from_value(input)?;
+                    to_json(profiles::icon(engine, self.home()?, scope, &req.profile_id).await?)
+                }
+                .await,
+            ),
             v if v == PROFILES_VIEW.id || v == PROFILE_VIEW.id => answer(
                 async {
                     let home = self.home()?;

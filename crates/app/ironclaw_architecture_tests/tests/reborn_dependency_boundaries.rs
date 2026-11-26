@@ -1778,7 +1778,13 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // works, for the new-thread picker's rows) and
         // `ProfileWriteRequest::fresh` (create-only: an archived id answers
         // `profile_exists` instead of coming back). No behavior.
-        ("ironclaw_product_contracts", 17_899),
+        // 17_899 -> 17_919 (2026-11-26, profile logos like t3code's project
+        // icons): the tree measures 18_069; the pin is the minimum that
+        // passes. +20 lines, wire only: `InboxProfile::icon_revision`, the
+        // `ProfileIcon` DTO (MIME, base64 bytes, revision) and the
+        // `PROFILE_ICON_VIEW` descriptor. The lookup lives in
+        // `ironclaw_assistant::orchestration::profile_icon`. No behavior.
+        ("ironclaw_product_contracts", 17_919),
         // 832 -> 432 (2026-08-12, #7373 refresh merge, main): re-pinned to the
         // measured count — this row still carried the +400 seed pad the
         // 2026-08-07 re-pin removed from its siblings.

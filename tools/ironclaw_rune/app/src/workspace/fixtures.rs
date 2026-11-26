@@ -128,6 +128,7 @@ fn inbox() -> InboxListResponse {
                 git_branch: None,
                 last_used_at: None,
                 folder: None,
+                icon_revision: None,
             },
             InboxProfile {
                 profile_id: "work".into(),
@@ -135,6 +136,7 @@ fn inbox() -> InboxListResponse {
                 git_branch: Some("main".into()),
                 last_used_at: None,
                 folder: None,
+                icon_revision: None,
             },
         ],
         last_used_profile_id: Some("work".into()),
@@ -219,6 +221,7 @@ pub fn fixture_profile_menu(s: &mut State) {
         git_branch: None,
         last_used_at: mins.map(|m| now - m * 60_000),
         folder: folder.map(|f| home.join(f).to_string_lossy().into_owned()),
+        icon_revision: None,
     };
     s.workspace.inbox.list.profiles = vec![
         profile("default", "Default", Some(".zlo/default"), Some(0)),
@@ -241,6 +244,14 @@ pub fn fixture_profile_menu(s: &mut State) {
     ];
     s.workspace.inbox.list.last_used_profile_id = Some("work".into());
     s.prefs.pinned_profiles = vec!["this-mac/verpin".into(), "this-mac/thesis".into()];
+    // Verpin's folder has its own logo (t3code's favicon in place of the
+    // letters); the rest draw their monograms.
+    super::profile_icons::fixture_logo(
+        s,
+        "verpin",
+        "image/svg+xml",
+        br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#0f172a"/><path d="M8 9l8 15 8-15" fill="none" stroke="#38bdf8" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg>"##,
+    );
     super::inbox::picker::new_thread(s, false);
 }
 
@@ -748,6 +759,7 @@ pub fn fixture_inbox_two_computers(s: &mut State) {
                 git_branch: None,
                 last_used_at: None,
                 folder: None,
+                icon_revision: None,
             },
             InboxProfile {
                 profile_id: "infra".into(),
@@ -755,6 +767,7 @@ pub fn fixture_inbox_two_computers(s: &mut State) {
                 git_branch: Some("main".into()),
                 last_used_at: None,
                 folder: None,
+                icon_revision: None,
             },
         ],
         last_used_profile_id: Some("infra".into()),

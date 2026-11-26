@@ -35,6 +35,7 @@ mod keys;
 mod message_search;
 #[cfg(test)]
 mod motion_tests;
+pub mod profile_icons;
 pub mod quick;
 mod shell;
 mod sidebar_pane;
@@ -99,6 +100,8 @@ pub struct WorkspaceState {
     /// Bumped per connect: a stale connect answer or retry timer is dropped.
     pub connect_gen: jobs::Generation,
     pub inbox: inbox::Inbox,
+    /// Profile folders' logos, per computer (`profile_icons`).
+    pub profile_icons: profile_icons::ProfileIcons,
     /// Unread inbox notifications on the focused computer.
     pub focused_unread: usize,
     /// Total unread inbox notifications (focused + ready peers), for the
@@ -176,6 +179,7 @@ impl Default for WorkspaceState {
             connect_attempt: 0,
             connect_gen: Default::default(),
             inbox: inbox::Inbox::new(),
+            profile_icons: profile_icons::ProfileIcons::default(),
             focused_unread: 0,
             unread: 0,
             alerts: Alerts::default(),

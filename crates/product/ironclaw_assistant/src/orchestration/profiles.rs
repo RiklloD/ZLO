@@ -163,6 +163,23 @@ pub(crate) async fn get(
     Ok(info(home, record))
 }
 
+/// `profiles.icon`: the logo in the profile's folder (`profile_icon`), or
+/// the correctable `no_profile_icon` when it has none.
+pub(crate) async fn icon(
+    engine: &Engine,
+    home: &ProfileHome,
+    scope: &ThreadScope,
+    raw: &str,
+) -> Result<ProfileIcon> {
+    let folder = PathBuf::from(get(engine, home, scope, raw).await?.effective_folder);
+    let icon = tokio::task::spawn_blocking(move || super::profile_icon::read(&folder))
+        .await
+        .map_err(|e| OrchestratorError::Store(format!("profile icon read failed: {e}")))?;
+    icon.ok_or_else(|| {
+        OrchestratorError::request("no_profile_icon", "This profile's folder has no logo.")
+    })
+}
+
 pub(crate) async fn write(
     engine: &Engine,
     home: &ProfileHome,

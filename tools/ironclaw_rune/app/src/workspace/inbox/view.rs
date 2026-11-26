@@ -17,11 +17,11 @@ use crate::workspace::draft;
 use crate::workspace::inbox::picker;
 
 pub(in crate::workspace) mod list;
+mod mark;
 mod rows;
 
-pub(in crate::workspace) use rows::{
-    MARK_SIZE, branch_label, draft_mark, profile_color, profile_mark, status_label,
-};
+pub(in crate::workspace) use mark::{MARK_SIZE, profile_color, profile_mark};
+pub(in crate::workspace) use rows::{branch_label, draft_mark, status_label};
 
 /// The sidebar's thread list with its header. `layer` takes the profile
 /// menu, which floats over the list so no row moves.
@@ -297,10 +297,10 @@ pub(super) fn new_draft_card(s: &State, k: &Kit) -> Option<El> {
         .center_y()
         .child(draft_mark(p))
         .child(profile_mark(
-            p,
+            s,
+            &s.onboarding.computer.key(),
             &profile_id,
             &name,
-            if active { 1. } else { 0. },
         ))
         .child(
             el().grow(1.0)

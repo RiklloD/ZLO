@@ -134,6 +134,17 @@ pub struct ProfileRequest {
     pub profile_id: String,
 }
 
+/// A profile folder's own logo, as `profiles.icon` serves it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfileIcon {
+    /// `image/png`, `image/svg+xml`, `image/x-icon`, `image/icns`, …
+    pub mime: String,
+    /// The file's bytes, base64 (standard alphabet, padded).
+    pub data_base64: String,
+    /// The same token as `InboxProfile::icon_revision`.
+    pub revision: String,
+}
+
 /// Create (new id) or update (existing id) one profile.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProfileWriteRequest {
@@ -190,6 +201,10 @@ pub const PROFILES_VIEW: ProductView<serde_json::Value, serde_json::Value> =
 /// Output: [`ProfileInfo`].
 pub const PROFILE_VIEW: ProductView<ProfileRequest, serde_json::Value> =
     ProductView::unpaginated("profiles.get");
+/// Output: [`ProfileIcon`], or the error document `no_profile_icon` when
+/// the profile's folder has no logo.
+pub const PROFILE_ICON_VIEW: ProductView<ProfileRequest, serde_json::Value> =
+    ProductView::unpaginated("profiles.icon");
 
 /// Output: [`ProfileInfo`].
 pub const PROFILE_CREATE_COMMAND_ID: &str = "profiles.create";

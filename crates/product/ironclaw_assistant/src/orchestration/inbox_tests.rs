@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use ironclaw_host_api::ids::{ActivityId, CapabilityId, TenantId, UserId};
 use ironclaw_orchestrator::model::ThreadScope;
 use ironclaw_orchestrator::runtime::{TurnEventSink, TurnOutcome};
+use ironclaw_product_contracts::profiles::{PROFILE_ICON_VIEW, PROFILE_VIEW, ProfileIcon};
 use ironclaw_product_contracts::surface::{
     ProductSurfaceInvokeRequest, ProductSurfaceInvokeResponse, ProductSurfaceQueryPage,
     ProductSurfaceStreamRequest, ProductSurfaceStreamResponse,
@@ -519,6 +520,88 @@ async fn inbox_profiles_carry_their_working_folder() {
         std::path::Path::new(folder).starts_with(dir.path()),
         "{folder} lives under the profile home"
     );
+}
+
+/// Like t3code's project icons: a profile whose folder has a favicon
+/// lists an icon revision, and `profiles.icon` serves that file; once it is
+/// gone the list drops the revision and the view answers `no_profile_icon`.
+#[tokio::test]
+async fn a_profile_folder_logo_is_listed_and_served() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Arc::new(
+        libsql::Builder::new_local(dir.path().join("o.db"))
+            .build()
+            .await
+            .unwrap(),
+    );
+    let runtime = Arc::new(ironclaw_libsql_runtime::LibSqlRuntime::new(Arc::clone(&db)).unwrap());
+    let engine = Engine::open_libsql(runtime, "ironclaw").await.unwrap();
+    let surface = OrchestratedProductSurface::new(Arc::new(Inner), Arc::clone(&engine), None)
+        .with_home(super::super::profiles::ProfileHome::new(
+            dir.path().to_path_buf(),
+        ));
+    let default_of = |list: InboxListResponse| {
+        list.profiles
+            .into_iter()
+            .find(|p| p.profile_id == DEFAULT_PROFILE_ID)
+            .unwrap()
+    };
+    let icon_view = || async {
+        surface
+            .query(
+                // safety: a ProductSurface read in a test, not a DB statement
+                caller("u1"),
+                ProductSurfaceQueryRequest {
+                    view_id: PROFILE_ICON_VIEW.id.into(),
+                    input: json!({"profile_id": DEFAULT_PROFILE_ID}),
+                    cursor: None,
+                    limit: None,
+                },
+            )
+            .await
+            .unwrap()
+            .items[0]
+            .clone()
+    };
+
+    // The folder from `profiles.get`: a list read now would cache "no logo"
+    // for a minute, as t3code's resolver does.
+    let info = surface
+        .query(
+            // safety: a ProductSurface read in a test, not a DB statement
+            caller("u1"),
+            ProductSurfaceQueryRequest {
+                view_id: PROFILE_VIEW.id.into(),
+                input: json!({"profile_id": DEFAULT_PROFILE_ID}),
+                cursor: None,
+                limit: None,
+            },
+        )
+        .await
+        .unwrap();
+    let folder = info.items[0]["effective_folder"]
+        .as_str()
+        .expect("a folder")
+        .to_string();
+    std::fs::create_dir_all(&folder).unwrap();
+    let logo = std::path::Path::new(&folder).join("public/favicon.svg");
+    std::fs::create_dir_all(logo.parent().unwrap()).unwrap();
+    std::fs::write(&logo, b"<svg/>").unwrap();
+
+    let revision = default_of(list_of(&surface, "u1").await)
+        .icon_revision
+        .expect("the folder's logo is listed");
+    let icon: ProfileIcon = serde_json::from_value(icon_view().await).unwrap();
+    assert_eq!(icon.mime, "image/svg+xml");
+    assert_eq!(icon.data_base64, "PHN2Zy8+");
+    assert_eq!(icon.revision, revision);
+
+    std::fs::remove_file(&logo).unwrap();
+    assert_eq!(
+        default_of(list_of(&surface, "u1").await).icon_revision,
+        None
+    );
+    assert_eq!(icon_view().await["error"], "no_profile_icon");
 }
 
 #[tokio::test]

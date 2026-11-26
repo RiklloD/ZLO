@@ -18,6 +18,7 @@ mod mentions;
 mod mentions_surface_tests;
 mod observer;
 mod profile_context;
+mod profile_icon;
 mod profiles;
 mod repo_surface;
 #[cfg(test)]

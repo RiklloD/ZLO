@@ -9,6 +9,7 @@
 //! answers with the list re-read. Goals are one objective per engine thread.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::{Arc, Mutex as StdMutex, PoisonError, Weak};
 
 use chrono::{DateTime, Utc};
@@ -346,20 +347,24 @@ pub(super) async fn list(
         .into_iter()
         .map(|record| {
             let last_used_at = record.last_used_at;
-            let (git_branch, display_name, profile_id, folder) = match home {
+            let (git_branch, display_name, profile_id, folder, icon_revision) = match home {
                 Some(home) => {
                     let info = profiles::info(home, record);
+                    let icon_revision =
+                        super::profile_icon::revision(Path::new(&info.effective_folder));
                     (
                         info.git_branch,
                         info.settings.display_name,
                         info.profile_id,
                         Some(info.effective_folder),
+                        icon_revision,
                     )
                 }
                 None => (
                     None,
                     record.settings.display_name,
                     record.profile_id.to_string(),
+                    None,
                     None,
                 ),
             };
@@ -369,6 +374,7 @@ pub(super) async fn list(
                 git_branch,
                 last_used_at,
                 folder,
+                icon_revision,
             }
         })
         .collect();

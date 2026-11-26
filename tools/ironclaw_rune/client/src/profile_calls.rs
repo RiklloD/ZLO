@@ -6,7 +6,7 @@
 //! here as [`ClientError::Api`] carrying the backend's message.
 
 use ironclaw_product_contracts::profiles::{
-    HermesImportResponse, ProfileInfo, ProfileListResponse, ProfileSettings,
+    HermesImportResponse, ProfileIcon, ProfileInfo, ProfileListResponse, ProfileSettings,
     ProfileThreadCreateResponse, ProfileWriteRequest,
 };
 use reqwest::Method;
@@ -34,6 +34,16 @@ pub(crate) fn document<T: DeserializeOwned>(value: Value) -> Result<T, ClientErr
 impl Client {
     pub async fn profiles(&self) -> Result<ProfileListResponse, ClientError> {
         document(self.get(&format!("{V2}/profiles")).await?)
+    }
+
+    /// The logo in the profile's folder (`InboxProfile::icon_revision` says
+    /// there is one). A folder without one answers `no_profile_icon`; a
+    /// gateway from before the route answers 404.
+    pub async fn profile_icon(&self, profile_id: &str) -> Result<ProfileIcon, ClientError> {
+        document(
+            self.get(&format!("{V2}/profiles/{}/icon", seg(profile_id)))
+                .await?,
+        )
     }
 
     pub async fn profile(&self, profile_id: &str) -> Result<ProfileInfo, ClientError> {

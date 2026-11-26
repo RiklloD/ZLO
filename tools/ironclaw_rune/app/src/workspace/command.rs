@@ -782,10 +782,10 @@ fn entry_row(s: &State, ix: usize, e: &Entry, on: bool) -> El {
         .on_press_tx(move |s: &mut State, tx: &mut Tx| run(s, cmd.clone(), tx))
         .child(match &e.profile {
             Some((id, name)) => el().size(MARK_SIZE, MARK_SIZE).center().child(profile_mark(
-                p,
+                s,
+                &s.onboarding.computer.key(),
                 id,
                 name,
-                if on { 1. } else { 0. },
             )),
             None => ui::glyph(e.icon, 16., if on { p.text } else { p.text_muted }),
         })
@@ -855,6 +855,7 @@ mod tests {
             git_branch: None,
             last_used_at: used,
             folder: folder.map(str::to_string),
+            icon_revision: None,
         };
         s.workspace.inbox.list.profiles = vec![
             profile("a", Some(3), Some("/w/a")),

@@ -480,6 +480,7 @@ pub fn profiles_changed(s: &mut State, change: ProfileChange<'_>) {
                 git_branch: saved.git_branch.clone(),
                 last_used_at: saved.last_used_at,
                 folder: Some(saved.effective_folder.clone()),
+                icon_revision: None,
             };
             match list
                 .profiles
@@ -1217,6 +1218,7 @@ mod tests {
             git_branch: None,
             last_used_at: None,
             folder: None,
+            icon_revision: None,
         };
         let body = |ids: &[&str], last: &str| {
             serde_json::to_string(&InboxListResponse {

@@ -84,6 +84,7 @@ fn profiles(s: &State) -> Vec<InboxProfile> {
             git_branch: None,
             last_used_at: None,
             folder: None,
+            icon_revision: None,
         }];
     }
     list.clone()
@@ -420,6 +421,7 @@ fn create_for_folder(s: &mut State, folder: &Path) {
                             git_branch: saved.git_branch.clone(),
                             last_used_at: saved.last_used_at,
                             folder: Some(saved.effective_folder.clone()),
+                            icon_revision: None,
                         });
                     }
                     crate::pages::profiles::remember_saved(s, &saved);
@@ -679,7 +681,7 @@ pub fn profile_picker(s: &State, k: &Kit) -> El {
     // profile colour (it morphs as it moves); on "Add profile" it is plain.
     if count > 0 {
         let wash = match entries.get(selected) {
-            Some(profile) => profile_wash(p, &profile.profile_id),
+            Some(profile) => profile_wash(p, &profile.display_name),
             None => ui::selected_wash(p),
         };
         let top = ROWS_PAD + selected as f32 * (ROW_H + ROWS_GAP);
@@ -720,8 +722,8 @@ pub fn profile_picker(s: &State, k: &Kit) -> El {
 }
 
 /// The highlight's wash: the profile's own colour, lightly.
-fn profile_wash(p: &design::Palette, profile_id: &str) -> Color {
-    profile_color(p, profile_id, 1.).alpha(if p.light { 0.1 } else { 0.16 })
+fn profile_wash(p: &design::Palette, name: &str) -> Color {
+    profile_color(p, name).alpha(if p.light { 0.1 } else { 0.16 })
 }
 
 fn profile_row(s: &State, ix: usize, profile: &InboxProfile, query: &str, on: bool) -> El {
@@ -742,10 +744,10 @@ fn profile_row(s: &State, ix: usize, profile: &InboxProfile, query: &str, on: bo
         .cursor(rune::Cursor::Pointer)
         .on_hover(move |s: &mut State| select(s, ix))
         .child(profile_mark(
-            p,
+            s,
+            &s.onboarding.computer.key(),
             &id,
             &profile.display_name,
-            if on { 1. } else { 0. },
         ))
         .child(el().grow(1.0).min_w(0.0).child(highlighted_name(
             p,
@@ -847,6 +849,7 @@ mod tests {
             git_branch: (id == "verpin").then(|| "release/train".into()),
             last_used_at: used,
             folder: Some(format!("/work/{id}")),
+            icon_revision: None,
         }
     }
 

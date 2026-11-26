@@ -129,6 +129,7 @@ fn parsed_inbox(thread_id: &str, title: &str, profiles: &[(&str, &str)]) -> Inbo
             git_branch: None,
             last_used_at: None,
             folder: None,
+            icon_revision: None,
         })
         .collect();
     list.last_used_profile_id = profiles.first().map(|(id, _)| (*id).into());

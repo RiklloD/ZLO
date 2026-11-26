@@ -112,6 +112,11 @@ pub struct InboxProfile {
     /// one), for the picker's location line. Absent from older servers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<String>,
+    /// Set when the folder has its own logo (a favicon or app icon, found
+    /// as t3code finds a project's): a token that changes with the file, so
+    /// the app fetches `profiles.icon` again. Absent: draw the letters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon_revision: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

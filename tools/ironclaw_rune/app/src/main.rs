@@ -77,6 +77,9 @@ fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     changed |= polled(C::PollPeers, remote::peers::poll(s, tx));
     // The inbox push streams follow the connections (opens and closes only).
     remote::inbox_stream::sync(s);
+    // Profile logos follow the listed revisions (fetches only; a decoded
+    // logo wakes the window itself).
+    workspace::profile_icons::sync(s);
     // Configuration sync starts the passes that are due (no timer).
     remote::config_sync::sync(s);
     // The quick composer's voice controls live in its own window.
@@ -228,6 +231,7 @@ fn main() {
         }
         workspace::quick::attach(&mut s, quick);
         design::look::start(&mut s);
+        workspace::profile_icons::start(&mut s);
         workspace::start(&mut s);
         s
     });

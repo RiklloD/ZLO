@@ -38,6 +38,7 @@ fn picked(id: &str, name: &str, used: Option<i64>) -> InboxProfile {
         git_branch: None,
         last_used_at: used,
         folder: None,
+        icon_revision: None,
     }
 }
 
