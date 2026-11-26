@@ -89,6 +89,9 @@ impl CliBridge {
     }
 }
 
+/// The server name ZLO's route has inside Codex.
+pub const CODEX_ROUTE_NAME: &str = "zlo_bridge";
+
 /// One turn's token for the loopback MCP route, revoked when the turn drops
 /// it. For drivers that hand the route to a CLI per turn (Codex).
 pub struct TurnMcpToken {
@@ -121,11 +124,14 @@ impl TurnMcpToken {
     }
 
     /// Codex's `config` override for the route: one streamable-HTTP MCP
-    /// server under `mcp_servers.<name>`, merged into the user's own.
+    /// server under `mcp_servers.<CODEX_ROUTE_NAME>`. Codex merges it into
+    /// the person's own config field by field, so it takes a name nobody
+    /// configures by hand (an `ironclaw` stdio server would keep its
+    /// `command` beside this `url` and Codex would refuse the mix).
     pub fn codex_config(&self) -> Value {
         let mut config = serde_json::Map::new();
         config.insert(
-            format!("mcp_servers.{}", crate::bridge::MCP_SERVER_NAME),
+            format!("mcp_servers.{CODEX_ROUTE_NAME}"),
             json!({
                 "url": self.url,
                 "http_headers": {"Authorization": format!("Bearer {}", self.token)},

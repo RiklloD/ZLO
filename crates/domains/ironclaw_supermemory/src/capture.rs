@@ -67,10 +67,33 @@ impl CapturedTurn {
 pub(crate) fn clean_for_capture(text: &str) -> String {
     let without_blocks = strip_injected_blocks(text);
     let without_images = replace_data_uris(&without_blocks);
-    ironclaw_safety::redact_model_input_text(without_images.trim())
-        .into_text()
-        .trim()
-        .to_string()
+    redact_for_egress(without_images.trim()).trim().to_string()
+}
+
+/// Credentials out of text bound for Supermemory: known secret shapes and
+/// labelled values, then credential parameters and userinfo in any URL the
+/// text carries (`?token=…`, `https://user:pass@…`).
+pub(crate) fn redact_for_egress(text: &str) -> String {
+    let text = ironclaw_safety::redact_model_input_text(text).into_text();
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text.as_str();
+    while let Some(start) = ["https://", "http://"]
+        .iter()
+        .filter_map(|scheme| rest.find(scheme))
+        .min()
+    {
+        // `find` answers char boundaries, so both splits are safe.
+        let (before, tail) = rest.split_at(start);
+        out.push_str(before);
+        let end = tail
+            .find(|ch: char| ch.is_whitespace() || matches!(ch, '"' | '\'' | '<' | '>' | ')'))
+            .unwrap_or(tail.len());
+        let (url, after) = tail.split_at(end);
+        out.push_str(&ironclaw_safety::redact_model_input_url(url).into_text());
+        rest = after;
+    }
+    out.push_str(rest);
+    out
 }
 
 fn strip_injected_blocks(text: &str) -> String {

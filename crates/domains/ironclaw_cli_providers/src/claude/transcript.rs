@@ -138,14 +138,22 @@ pub(super) fn message(v: &Value) -> Option<HistoryMessage> {
     let mut text = String::new();
     let mut tool_calls = Vec::new();
     let mut tool_result = false;
-    for b in blocks {
+    // The memories ZLO recalled for the message ride as the first block,
+    // with the person's text as a later one: only that block is dropped (a
+    // message the person typed is never the first of two text blocks).
+    let text_blocks = blocks
+        .iter()
+        .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+        .count();
+    for (index, b) in blocks.iter().enumerate() {
         match b.get("type").and_then(Value::as_str) {
             // Text blocks join with a blank line, as the live stream does.
             Some("text") => {
                 let block = b["text"].as_str().unwrap_or_default();
-                // The memories ZLO recalled for the message, not its words.
                 if role == HistoryRole::User
-                    && block.trim_start().starts_with(crate::RECALLED_MEMORY_OPEN)
+                    && index == 0
+                    && text_blocks > 1
+                    && block.starts_with(crate::RECALLED_MEMORY_OPEN)
                 {
                     continue;
                 }
@@ -316,6 +324,19 @@ mod tests {
         let rows = read(&path, 10).await.unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].text, "where is the key?", "the person's words only");
+
+        // Someone typing the tag themselves keeps their message, with or
+        // without a picture.
+        let typed = format!("{} not a memory", crate::RECALLED_MEMORY_OPEN);
+        let alone = super::super::control::prompt_with_recalled("run-2", &typed, None).await;
+        let with_image = r#"{"type":"user","uuid":"run-3","message":{"role":"user","content":[{"type":"image","source":{}},{"type":"text","text":"<zlo-recalled-memory> mine"}]}}"#;
+        tokio::fs::write(&path, format!("{alone}\n{with_image}"))
+            .await
+            .unwrap();
+        let rows = read(&path, 10).await.unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].text, typed);
+        assert_eq!(rows[1].text, "<zlo-recalled-memory> mine");
     }
 
     #[tokio::test]

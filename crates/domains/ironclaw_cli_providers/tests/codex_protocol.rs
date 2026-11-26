@@ -508,7 +508,7 @@ while IFS= read -r line; do
     *'"method":"thread/start"'*|*'"method":"thread/resume"'*) reply "$id" '{"thread":{"id":"cx-1"},"model":"gpt-5.5"}' ;;
     *'"method":"turn/start"'*)
       reply "$id" '{"turn":{"id":"tu-1","status":"inProgress"}}'
-      ask el-1 ironclaw
+      ask el-1 zlo_bridge
       ask el-2 someone-else ;;
     *'"id":"el-2"'*)
       emit item/completed '{"threadId":"cx-1","turnId":"tu-1","item":{"type":"agentMessage","id":"m1","text":"ok","phase":null,"memoryCitation":null,"delivery":null,"questions":null}}'
@@ -555,7 +555,7 @@ async fn a_turn_gets_the_bridge_route_and_only_its_tool_calls_are_allowed() {
         .find(|l| l.contains(r#""method":"thread/start""#))
         .expect("thread/start sent");
     let start: serde_json::Value = serde_json::from_str(start).unwrap();
-    let server = &start["params"]["config"]["mcp_servers.ironclaw"];
+    let server = &start["params"]["config"]["mcp_servers.zlo_bridge"];
     assert_eq!(server["url"], "http://127.0.0.1:9/mcp", "{start}");
     let auth = server["http_headers"]["Authorization"].as_str().unwrap();
     let token = auth.strip_prefix("Bearer ").unwrap();

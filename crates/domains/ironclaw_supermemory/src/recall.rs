@@ -71,7 +71,7 @@ impl RecallItem {
 /// First [`RECALL_QUERY_CHARS`] characters, trimmed; `None` when blank.
 pub(crate) fn recall_query(message: &str) -> Option<String> {
     // A credential pasted into the message never leaves as a search query.
-    let message = ironclaw_safety::redact_model_input_text(message).into_text();
+    let message = crate::capture::redact_for_egress(message);
     let query: String = message.trim().chars().take(RECALL_QUERY_CHARS).collect();
     let query = query.trim().to_string();
     (!query.is_empty()).then_some(query)

@@ -351,6 +351,17 @@ impl Supermemory {
         Ok(current_written)
     }
 
+    /// The stored key changed: captures still waiting were for the old key's
+    /// account and are dropped, never written under the new one. The
+    /// conversations themselves stay in their threads.
+    pub(crate) fn key_changed(&self) {
+        self.client.forget_cached_key();
+        let dropped = std::mem::take(&mut *self.pending_lock()).len();
+        if dropped > 0 {
+            tracing::debug!(dropped, "supermemory key changed; pending captures dropped");
+        }
+    }
+
     fn pending_lock(&self) -> std::sync::MutexGuard<'_, Vec<CapturedTurn>> {
         self.pending.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -382,6 +393,8 @@ impl Supermemory {
             .active_with(caller, binding)
             .await?
             .ok_or(SupermemoryError::Disabled)?;
+        // No credential leaves in a query, whoever asks (tool or page).
+        let query = crate::capture::redact_for_egress(query.trim());
         let query = query.trim();
         if query.is_empty() {
             return Err(SupermemoryError::InvalidInput {
@@ -418,6 +431,8 @@ impl Supermemory {
             .active(caller)
             .await?
             .ok_or(SupermemoryError::Disabled)?;
+        // A credential the agent was handed is never stored remotely.
+        let content = crate::capture::redact_for_egress(content.trim());
         let content = content.trim();
         if content.is_empty() {
             return Err(SupermemoryError::InvalidInput {

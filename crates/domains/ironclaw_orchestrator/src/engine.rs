@@ -526,10 +526,46 @@ impl Engine {
         respect_hold: bool,
         files: Vec<std::path::PathBuf>,
     ) -> Result<bool> {
+        self.deliver_inner(thread_id, text, origin, respect_hold, files, true)
+            .await
+    }
+
+    /// A queued message going out: remembered only when the person wrote it
+    /// (an agent's queued text is not their words).
+    pub(crate) async fn deliver_queued(
+        &self,
+        thread_id: &ThreadId,
+        text: String,
+        by_person: bool,
+    ) -> Result<bool> {
+        self.deliver_inner(
+            thread_id,
+            text,
+            TurnOrigin::QueueDrain,
+            true,
+            Vec::new(),
+            by_person,
+        )
+        .await
+    }
+
+    async fn deliver_inner(
+        &self,
+        thread_id: &ThreadId,
+        text: String,
+        origin: TurnOrigin,
+        respect_hold: bool,
+        files: Vec<std::path::PathBuf>,
+        remember: bool,
+    ) -> Result<bool> {
         // Recall before the engine-wide lock: a slow memory never holds up
         // another thread's start or Stop. Skipped for a thread that is busy
         // now (the queue retries it every tick).
-        let memory = self.recall_for(thread_id, &text, origin).await;
+        let memory = if remember {
+            self.recall_for(thread_id, &text, origin).await
+        } else {
+            None
+        };
         let _guard = self.dispatch.lock().await;
         if respect_hold && self.store.hold(thread_id).await?.is_some() {
             return Ok(false);
@@ -592,7 +628,7 @@ impl Engine {
             TurnAdmission::Started { run_id } => {
                 self.mark_running(&thread, run_id.as_deref(), now_ms(), maintenance)
                     .await?;
-                if !maintenance {
+                if !maintenance && remember {
                     self.turn_memory
                         .started(thread_id, run_id.as_deref(), &asked, origin);
                 }

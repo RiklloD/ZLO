@@ -786,7 +786,7 @@ impl Turn {
                 // The next steer. Stop's flag is looked at again where the
                 // frame is queued (under the door's lock).
                 Some(request) = steers.recv(), if !self.cancelled.load(Ordering::SeqCst) => {
-                    let input = codex_input(&request.steer.text).await;
+                    let input = codex_input(&request.steer.text, &request.steer.text).await;
                     // Fold what Codex already sent, so the cut is where its
                     // reply really stands (a bounded batch: Stop is looked
                     // at again right after).
@@ -899,7 +899,7 @@ impl Turn {
         let text = crate::with_context(&self.text, self.context.as_deref());
         let mut params = json!({
             "threadId": codex_thread,
-            "input": codex_input(&text).await,
+            "input": codex_input(&text, &self.text).await,
         });
         if let Some(model) = &self.model {
             params["model"] = json!(model);
@@ -1135,7 +1135,8 @@ async fn saved_thread(config: &CodexConfig, session: &str) -> Option<String> {
 /// put to the person as a question (`plan.rs`).
 fn own_tool_call(method: &str, params: &Value) -> bool {
     method == "mcpServer/elicitation/request"
-        && params.get("serverName").and_then(Value::as_str) == Some(crate::bridge::MCP_SERVER_NAME)
+        && params.get("serverName").and_then(Value::as_str)
+            == Some(crate::bridge_tools::CODEX_ROUTE_NAME)
         && params["_meta"]
             .get("codex_approval_kind")
             .and_then(Value::as_str)
@@ -1198,9 +1199,11 @@ fn open_failed(error: &RpcError) -> TurnOutcome {
 /// The canonical path (macOS `/tmp` is `/private/tmp`).
 /// A turn's `input`: the text, then each attached picture as a data URL
 /// (T3 Code's Codex shape). The text keeps the file paths either way.
-async fn codex_input(text: &str) -> Value {
+/// The prompt as Codex reads it, with the pictures `typed` (the person's
+/// own text, never the context or recalled memory ahead of it) attaches.
+async fn codex_input(text: &str, typed: &str) -> Value {
     let mut input = vec![json!({"type": "text", "text": text, "text_elements": []})];
-    for image in crate::attachments::inline_images(text).await {
+    for image in crate::attachments::inline_images(typed).await {
         input.push(json!({"type": "image", "url": image.data_url()}));
     }
     Value::Array(input)

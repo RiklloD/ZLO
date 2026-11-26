@@ -1050,3 +1050,52 @@ async fn credentials_are_redacted_from_recall_queries_and_captures() {
     let body = egress.requests_to("/v3/documents")[0].body.to_string();
     assert!(!body.contains(secret), "{body}");
 }
+
+#[tokio::test]
+async fn url_credentials_are_redacted_and_a_key_change_drops_old_pending_captures() {
+    use ironclaw_product_contracts::service_keys::ServiceKeyVerifier;
+    let (supermemory, egress) = build(MemoryKeys::with_key(), "");
+    egress.respond("/v4/search", 200, json!({"results": []}));
+    supermemory
+        .search(
+            &caller(),
+            "see https://api.example.com/x?token=opaque123secret&page=2 now",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let query = egress.requests_to("/v4/search")[0].body.to_string();
+    assert!(!query.contains("opaque123secret"), "{query}");
+    assert!(
+        query.contains("page=2"),
+        "the rest of the URL stays: {query}"
+    );
+
+    egress.respond("/v3/documents", 200, json!({"id": "w", "status": "queued"}));
+    supermemory
+        .write(
+            &caller(),
+            "login at https://bob:hunter2pass@intranet.example/",
+            None,
+        )
+        .await
+        .unwrap();
+    let body = egress.requests_to("/v3/documents")[0].body.to_string();
+    assert!(!body.contains("hunter2pass"), "{body}");
+
+    egress.respond("/v3/documents", 500, json!({}));
+    supermemory
+        .capture(&caller(), "t", "old account turn", "ok")
+        .await
+        .unwrap();
+    assert_eq!(supermemory.pending_len(), 1);
+    SupermemoryKeyVerifier::new(Arc::clone(&supermemory))
+        .key_changed()
+        .await;
+    assert_eq!(
+        supermemory.pending_len(),
+        0,
+        "never retried under a new key"
+    );
+}

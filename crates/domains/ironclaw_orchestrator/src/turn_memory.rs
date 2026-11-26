@@ -49,7 +49,10 @@ fn own_words(text: &str, origin: TurnOrigin) -> Option<&str> {
     if !matches!(origin, TurnOrigin::UserPrompt | TurnOrigin::QueueDrain) {
         return None;
     }
-    let words = crate::handoff::strip_context(text).unwrap_or(text).trim();
+    let words = crate::handoff::strip_context(text).unwrap_or(text);
+    // `@thread` / `@file` digests ZLO expanded into the message are another
+    // thread's or file's content, not the person's words.
+    let words = ironclaw_product_contracts::mention::strip_mention_context(words).trim();
     (!words.is_empty()).then_some(words)
 }
 
@@ -171,5 +174,15 @@ mod tests {
             "Context handoff (a). their transcript\n\n[End of context handoff]\n\n---\n\nmy words";
         hooks.started(&thread, Some("r5"), handed, TurnOrigin::UserPrompt);
         assert_eq!(hooks.take(&thread, Some("r5")).as_deref(), Some("my words"));
+        let mentioned = format!(
+            "compare with @a{}a's transcript{}",
+            ironclaw_product_contracts::mention::MENTION_CONTEXT_OPEN,
+            ironclaw_product_contracts::mention::MENTION_CONTEXT_CLOSE
+        );
+        hooks.started(&thread, Some("r6"), &mentioned, TurnOrigin::UserPrompt);
+        assert_eq!(
+            hooks.take(&thread, Some("r6")).as_deref(),
+            Some("compare with @a")
+        );
     }
 }
