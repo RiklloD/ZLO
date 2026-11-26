@@ -29,7 +29,7 @@ mod command;
 mod context;
 mod draft;
 pub mod fixtures;
-mod inbox;
+pub(crate) mod inbox;
 pub mod intro;
 mod keys;
 mod message_search;
@@ -327,11 +327,23 @@ pub(crate) fn connected(
     crate::onboarding::decide(s);
     start_polling(s);
     status::start(s);
+    // Plugins' slots: read once per connection, again on lifecycle changes.
+    crate::plugins::refresh_slots(s);
+    // An explicit `(computer, thread)` intent (`peers::focus_thread`) takes
+    // precedence over the draft default computer and `last_thread`, and opens
+    // the thread even when it is absent from the inbox list.
+    if let Some(pending) = s
+        .remote
+        .pending_thread
+        .take_if(|p| p.computer == s.onboarding.computer.key())
+    {
+        s.workspace.carried_draft = None;
+        open_thread(s, pending.thread_id);
+        return;
+    }
     // An unsent triage draft follows the computer it now talks to, and
     // stays on screen instead of the last thread opened there.
     let triage_draft = triage::connected(s);
-    // Plugins' slots: read once per connection, again on lifecycle changes.
-    crate::plugins::refresh_slots(s);
     if triage_draft || draft::runs_on::connected(s) {
         return;
     }
@@ -924,6 +936,7 @@ pub fn poll(s: &mut State, tx: &mut Tx) -> bool {
     if due(s.workspace.timers.wake) {
         s.workspace.timers.wake = None;
         inbox::refresh(s);
+        crate::remote::peers::refresh(s);
     }
     if due(s.workspace.timers.tick) {
         s.workspace.timers.tick = None;
@@ -1126,6 +1139,8 @@ pub fn window_focus(s: &mut State, focused: bool, tx: &mut Tx) {
     // a live chat's seconds) start again from the poll: ask for one now.
     if focused {
         tx.wake_after(Duration::ZERO);
+        crate::remote::peers::wake_asleep(s);
+        crate::remote::peers::refresh(s);
     }
     if !matches!(s.conn, Conn::Ready) {
         return;
@@ -1134,7 +1149,6 @@ pub fn window_focus(s: &mut State, focused: bool, tx: &mut Tx) {
     // Back in front: catch up on whatever finished meanwhile.
     if focused {
         inbox::refresh(s);
-        crate::remote::peers::refresh(s);
         restore_composer(s);
     }
 }
@@ -1203,6 +1217,12 @@ pub(crate) fn asked_motion(tx: &Tx) -> bool {
 #[cfg(test)]
 pub(crate) fn asked_color_motion(tx: &Tx) -> bool {
     !format!("{tx:?}").contains("color_motion: None")
+}
+
+/// Whether a handler or poll requested a timed wake (`Tx::wake_after`).
+#[cfg(test)]
+pub(crate) fn asked_wake(tx: &Tx) -> bool {
+    !format!("{tx:?}").contains("wakes: []")
 }
 
 #[cfg(test)]

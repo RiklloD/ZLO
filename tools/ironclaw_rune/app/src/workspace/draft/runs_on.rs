@@ -172,7 +172,10 @@ pub(crate) fn pick(s: &mut State, key: String) {
 /// the current computer and returns a one-line note if the preferred computer
 /// is unavailable.
 pub(super) fn apply_default_on_open(s: &mut State) -> DefaultOutcome {
-    if s.workspace.carried_draft.is_some() || crate::workspace::triage::is_triage_draft(s) {
+    if s.workspace.carried_draft.is_some()
+        || s.remote.pending_thread.is_some()
+        || crate::workspace::triage::is_triage_draft(s)
+    {
         return DefaultOutcome::Stay(None);
     }
     let Some((target_key, target_label)) = default_computer::effective(s) else {

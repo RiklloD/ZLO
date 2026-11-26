@@ -12,6 +12,7 @@
 //! Retries stop while the battery saver holds or the window is hidden and
 //! resume on focus.
 
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::time::{Duration, Instant};
 
@@ -24,16 +25,23 @@ use zlo_client::notification_inbox::ProductNotification;
 use zlo_client::wire::SessionInfo;
 use zlo_client::{Backend, Client, ClientError};
 
-use super::connect::{self, Mode};
 use crate::jobs::Generation;
 use crate::onboarding::gateway::Computer;
 use crate::state::{Conn, State};
+use crate::workspace::inbox::{SENT_POLL, Sent};
 
+#[path = "peers_handover.rs"]
+mod handover;
 #[path = "peers_io.rs"]
 mod io;
 
+pub use handover::{focus, focus_thread};
+
 /// Working-row poll period (matches `workspace::inbox::POLL`).
 const POLL: Duration = Duration::from_secs(5);
+/// Small pad added to requested wakes so the poll lands at or after its
+/// deadline instead of waking slightly early and finding nothing due.
+const WAKE_PAD: Duration = Duration::from_millis(20);
 
 /// Live state of one background peer connection.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -70,6 +78,9 @@ pub struct Peer {
     loading: bool,
     stale: bool,
     poll_at: Option<Instant>,
+    /// Prompts sent just before this computer was demoted, waiting for its
+    /// backend to list the run as working.
+    sent: BTreeMap<String, Sent>,
 }
 
 impl Peer {
@@ -94,6 +105,7 @@ impl Peer {
             loading: false,
             stale: false,
             poll_at: None,
+            sent: BTreeMap::new(),
         }
     }
 
@@ -122,6 +134,9 @@ pub struct ComputerChoice {
 #[derive(Default)]
 pub struct Peers {
     entries: Vec<Peer>,
+    /// Last wake deadline submitted to Rune via `tx.wake_after`, so repeated
+    /// `poll` runs with the same deadline do not re-submit wakes.
+    wake_asked: Option<Instant>,
 }
 
 impl Peers {
@@ -131,6 +146,15 @@ impl Peers {
 
     pub fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    /// Ask Rune for a wake at `at` only if no earlier or equal deadline has
+    /// already been requested.
+    pub(super) fn request_wake(&mut self, at: Instant, now: Instant, tx: &mut Tx) {
+        if self.wake_asked.is_none_or(|prev| at < prev) {
+            self.wake_asked = Some(at);
+            tx.wake_after(at.saturating_duration_since(now) + WAKE_PAD);
+        }
     }
 
     /// Insert or replace a peer directly (for headless scenes and fixtures).
@@ -262,21 +286,50 @@ pub fn refresh_one(s: &mut State, key: &str) {
     io::refresh_peer(s, key);
 }
 
+/// Re-evaluate every `Asleep` peer now (window activation, Computers page
+/// refresh) without waiting for a fresh tailnet discovery. If a peer is still
+/// unreachable and discovery still marks it offline, `peer_failed` returns it
+/// to `Asleep` with no retry loop.
+pub fn wake_asleep(s: &mut State) {
+    if s.fixture || s.remote.peers.is_empty() {
+        return;
+    }
+    let mut to_connect: Vec<String> = Vec::new();
+    for peer in &mut s.remote.peers.entries {
+        if peer.conn == PeerConn::Asleep {
+            peer.conn = PeerConn::Connecting;
+            peer.retry_attempt = 0;
+            peer.retry_at = None;
+            to_connect.push(peer.key());
+        }
+    }
+    for key in to_connect {
+        io::connect_peer(s, &key);
+    }
+}
+
 /// Apply an updated inbox list returned by a mark on `key` and re-arm its
 /// working-row poll when needed.
 pub fn apply_inbox(s: &mut State, key: &str, list: InboxListResponse, tx: &mut Tx) {
     let arm_poll = s.workspace.window_active && !crate::design::look::saving(s);
+    let now = Instant::now();
+    let mut wake_at = None;
     let Some(peer) = s.remote.peers.get_mut(key) else {
         return;
     };
+    prune_sent(&mut peer.sent, &list);
     peer.inbox = Some(list);
     if arm_poll && peer_needs_poll(peer) {
-        if peer.poll_at.is_none() {
-            peer.poll_at = Some(Instant::now() + POLL);
-            tx.wake_after(POLL);
+        let target = now + peer_poll_period(peer);
+        if peer.poll_at.is_none_or(|at| at > target) {
+            peer.poll_at = Some(target);
+            wake_at = Some(target);
         }
     } else {
         peer.poll_at = None;
+    }
+    if let Some(at) = wake_at {
+        s.remote.peers.request_wake(at, now, tx);
     }
 }
 
@@ -293,6 +346,7 @@ pub fn remove_row(s: &mut State, key: &str, thread_id: &str) {
 /// Returns `true` when peer state changed.
 pub fn poll(s: &mut State, tx: &mut Tx) -> bool {
     if s.fixture || s.remote.peers.is_empty() {
+        s.remote.peers.wake_asked = None;
         return false;
     }
     let now = Instant::now();
@@ -304,6 +358,8 @@ pub fn poll(s: &mut State, tx: &mut Tx) -> bool {
     let mut next_wake: Option<Instant> = None;
 
     for peer in &mut s.remote.peers.entries {
+        peer.sent.retain(|_, sent| sent.live());
+
         // Retries stop while the battery saver holds or the window is hidden,
         // and resume on focus.
         if let Some(at) = peer.retry_at
@@ -318,21 +374,22 @@ pub fn poll(s: &mut State, tx: &mut Tx) -> bool {
             }
         }
 
-        // Working-row poll: 5 s only while a row is working and the window is
-        // in front (and not battery-saving).
+        // Working-row (and post-send confirmation) poll: only while active
+        // and not battery-saving.
         if peer.conn == PeerConn::Ready && peer.backend.is_some() {
             let needs = active && !saving && peer_needs_poll(peer);
             if !needs {
                 peer.poll_at = None;
             } else {
+                let period = peer_poll_period(peer);
                 match peer.poll_at {
                     None => {
-                        let at = now + POLL;
+                        let at = now + period;
                         peer.poll_at = Some(at);
                         next_wake = Some(next_wake.map_or(at, |n| n.min(at)));
                     }
                     Some(at) if at <= now => {
-                        let next = now + POLL;
+                        let next = now + period;
                         peer.poll_at = Some(next);
                         next_wake = Some(next_wake.map_or(next, |n| n.min(next)));
                         to_refresh.push(peer.key());
@@ -355,11 +412,15 @@ pub fn poll(s: &mut State, tx: &mut Tx) -> bool {
         io::refresh_peer(s, &key);
     }
 
-    if let Some(next) = next_wake {
-        tx.wake_after(
-            next.saturating_duration_since(now)
-                .max(Duration::from_millis(5)),
-        );
+    match next_wake {
+        Some(next) if s.remote.peers.wake_asked != Some(next) => {
+            s.remote.peers.wake_asked = Some(next);
+            tx.wake_after(next.saturating_duration_since(now) + WAKE_PAD);
+        }
+        None => {
+            s.remote.peers.wake_asked = None;
+        }
+        Some(_) => {}
     }
     changed
 }
@@ -412,10 +473,10 @@ pub fn run<F, Fut, T>(
     if s.fixture {
         return;
     }
-    let rt = s.rt.clone();
+    let delivery = s.rt.delivery();
     let key_owned = key.to_string();
     let Some(peer) = s.remote.peers.get(key) else {
-        rt.deliver(move |s, tx| {
+        delivery.deliver(move |s, tx| {
             if s.fixture || s.remote.peers.get(&key_owned).is_some() {
                 return false;
             }
@@ -430,7 +491,7 @@ pub fn run<F, Fut, T>(
     };
     let generation = peer.generation;
     let Some(backend) = peer.backend.as_ref() else {
-        rt.deliver(move |s, tx| {
+        delivery.deliver(move |s, tx| {
             if s.fixture
                 || !s
                     .remote
@@ -450,13 +511,12 @@ pub fn run<F, Fut, T>(
         return;
     };
     let job = backend.spawn(f);
-    let land = rt.clone();
     backend.spawn(move |_| async move {
         let result = crate::jobs::flatten(job.await);
         if let Err(e) = &result {
             tracing::warn!(view = label, computer = %key_owned, error = %e, "peer gateway request failed");
         }
-        land.deliver(move |s, tx| {
+        delivery.deliver(move |s, tx| {
             crate::energy::hit(crate::energy::C::UpdateJob);
             if s.fixture {
                 return false;
@@ -478,39 +538,6 @@ pub fn run<F, Fut, T>(
             }
         });
     });
-}
-
-/// Move the focus to `key`. Ready peer: instant handover on the UI thread
-/// with no network requests. Otherwise the existing `connect::switch_to`.
-pub fn focus(s: &mut State, key: &str) {
-    if is_ready_focused(s, key) {
-        return;
-    }
-    if can_handover(s, key) {
-        handover(s, key);
-        return;
-    }
-    connect::switch_to(s, active_of_key(key));
-}
-
-/// Focus `key`, then open `thread_id` once the focus has landed (immediately
-/// on a handover or if `key` is already focused).
-pub fn focus_thread(s: &mut State, key: &str, thread_id: String) {
-    if is_ready_focused(s, key) {
-        crate::workspace::open_thread(s, thread_id);
-        return;
-    }
-    s.remote
-        .last_thread
-        .insert(key.to_string(), thread_id.clone());
-    if can_handover(s, key) {
-        handover(s, key);
-        if crate::workspace::active_id(s) != Some(thread_id.as_str()) {
-            crate::workspace::open_thread(s, thread_id);
-        }
-        return;
-    }
-    connect::switch_to(s, active_of_key(key));
 }
 
 /// The focused computer first, then every peer in registry order. For menus.
@@ -538,98 +565,6 @@ pub fn usable(s: &State) -> Vec<ComputerChoice> {
         });
     }
     out
-}
-
-// ── handover ─────────────────────────────────────────────────────────────
-
-fn is_ready_focused(s: &State, key: &str) -> bool {
-    s.onboarding.computer.key() == key
-        && s.remote.switching.is_none()
-        && matches!(s.conn, Conn::Ready)
-}
-
-fn can_handover(s: &State, key: &str) -> bool {
-    s.remote.peers.get(key).is_some_and(|p| {
-        p.conn == PeerConn::Ready && p.backend.is_some() && p.session.is_some() && p.inbox.is_some()
-    })
-}
-
-fn handover(s: &mut State, key: &str) {
-    // Cancel any connect or switch attempt in flight.
-    s.workspace.connect_gen.bump();
-    s.remote.page.pending_backend = None;
-    s.remote.switching = None;
-
-    let Some(mut peer) = s.remote.peers.take(key) else {
-        return;
-    };
-    let (Some(peer_backend), Some(peer_session), Some(peer_inbox)) =
-        (peer.backend.take(), peer.session.take(), peer.inbox.take())
-    else {
-        return;
-    };
-
-    // 1. Remember the open thread for the old computer.
-    let old_key = s.onboarding.computer.key();
-    if let Some(id) = crate::workspace::active_id(s) {
-        s.remote.last_thread.insert(old_key, id.to_string());
-    }
-
-    // 2. The old focused connection becomes a ready peer (kept by `sync` if
-    //    it belongs in the peer set).
-    let old_backend = s.rt.backend.take();
-    let old_session = s.session.take();
-    let old_inbox = s.workspace.inbox.list.clone();
-    let old_computer = s.onboarding.computer.clone();
-    let old_descriptor = s.remote.descriptor.take();
-    let old_tunnel = s.remote.tunnel.take();
-    let old_route_rank = s.remote.route_rank;
-    let old_readiness = s.remote.focused_computer_readiness.take();
-    let old_unread = s.workspace.focused_unread;
-    let peer_readiness = peer.computer_readiness.take();
-    let peer_unread = peer.unread_count;
-    if matches!(s.conn, Conn::Ready)
-        && let (Some(b), Some(sess)) = (old_backend, old_session)
-    {
-        let mut demoted = Peer::new(old_computer, PeerConn::Ready);
-        demoted.backend = Some(b);
-        demoted.session = Some(sess);
-        demoted.inbox = Some(old_inbox);
-        demoted.unread_count = old_unread;
-        demoted.computer_readiness = old_readiness;
-        demoted.computer_readiness_probed = demoted.computer_readiness.is_some();
-        demoted.descriptor = old_descriptor;
-        demoted.tunnel = old_tunnel;
-        demoted.route_rank = old_route_rank;
-        if s.workspace.window_active && !crate::design::look::saving(s) && peer_needs_poll(&demoted)
-        {
-            demoted.poll_at = Some(Instant::now() + POLL);
-        }
-        s.remote.peers.upsert(demoted);
-    }
-
-    // 3. Install the peer's connection through `connect::switched` (`Mode::Switch`).
-    s.remote.registry.active = active_of_key(key);
-    s.remote.legacy_active = false;
-    s.remote.tunnel = peer.tunnel.take();
-    s.remote.route_rank = peer.route_rank;
-    if let Err(e) = super::save_registry(s) {
-        tracing::warn!(error = %e, "computer pick not saved");
-    }
-    let mut tx = Tx::default();
-    connect::switched(
-        s,
-        Mode::Switch,
-        peer_backend,
-        peer.computer,
-        peer.descriptor.take(),
-        peer_session,
-        peer_inbox,
-        &mut tx,
-    );
-    s.remote.focused_computer_readiness = peer_readiness;
-    crate::workspace::set_unread(s, peer_unread);
-    // 4. `connect::switched` runs `peers::sync(s)` and reopens `last_thread`.
 }
 
 // ── connecting and refreshing peers ──────────────────────────────────────
@@ -668,17 +603,44 @@ fn active_of_key(key: &str) -> Active {
 }
 
 fn peer_needs_poll(peer: &Peer) -> bool {
-    peer.inbox.as_ref().is_some_and(|list| {
-        list.rows.iter().any(|r| {
-            r.title_pending
-                || matches!(
-                    r.status,
-                    Some(InboxStatus::Working | InboxStatus::Background | InboxStatus::NeedsInput)
-                )
+    peer.sent.values().any(Sent::live)
+        || peer.inbox.as_ref().is_some_and(|list| {
+            list.rows.iter().any(|r| {
+                r.title_pending
+                    || matches!(
+                        r.status,
+                        Some(
+                            InboxStatus::Working
+                                | InboxStatus::Background
+                                | InboxStatus::NeedsInput
+                        )
+                    )
+            })
         })
-    })
+}
+
+fn peer_poll_period(peer: &Peer) -> Duration {
+    if peer.sent.values().any(Sent::live) {
+        SENT_POLL
+    } else {
+        POLL
+    }
+}
+
+fn prune_sent(sent: &mut BTreeMap<String, Sent>, inbox: &InboxListResponse) {
+    sent.retain(|id, entry| {
+        entry.live()
+            && !inbox
+                .rows
+                .iter()
+                .any(|r| r.thread_id == *id && entry.confirmed_by(r.status))
+    });
 }
 
 #[cfg(test)]
 #[path = "peers_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "peers_review_tests.rs"]
+mod review_tests;

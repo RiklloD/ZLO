@@ -19,7 +19,9 @@ use zlo_client::{Backend, Client, ClientError};
 use crate::state::State;
 
 /// The runtime services every handler can reach through `State::rt`.
-#[derive(Clone)]
+///
+/// Deliberately not `Clone`: `Backend` owns a Tokio runtime that must only
+/// drop on the UI thread. Background workers take [`Rt::delivery`] instead.
 pub struct Rt {
     /// Queue work onto the UI thread from any thread.
     pub handle: AppHandle<State>,
@@ -29,6 +31,27 @@ pub struct Rt {
     /// queue, so a test runs them ([`harness::Pump`]).
     #[cfg(test)]
     pub(crate) sink: Option<harness::Sink>,
+}
+
+/// UI-thread delivery handle for background workers: holds only the Rune
+/// `AppHandle` and the test sink — never a `Backend` (Tokio runtime).
+#[derive(Clone)]
+pub(crate) struct Deliver {
+    handle: AppHandle<State>,
+    #[cfg(test)]
+    sink: Option<harness::Sink>,
+}
+
+impl Deliver {
+    /// Queue `f` for the UI thread (`AppHandle::update_if`).
+    pub(crate) fn deliver(&self, f: impl FnOnce(&mut State, &mut Tx) -> bool + Send + 'static) {
+        #[cfg(test)]
+        if let Some(sink) = &self.sink {
+            sink.push(Box::new(f));
+            return;
+        }
+        self.handle.update_if(f);
+    }
 }
 
 impl Rt {
@@ -41,14 +64,18 @@ impl Rt {
         }
     }
 
+    /// A cloneable delivery handle for background workers (no `Backend`).
+    pub(crate) fn delivery(&self) -> Deliver {
+        Deliver {
+            handle: self.handle.clone(),
+            #[cfg(test)]
+            sink: self.sink.clone(),
+        }
+    }
+
     /// Queue `f` for the UI thread (`AppHandle::update_if`).
     pub(crate) fn deliver(&self, f: impl FnOnce(&mut State, &mut Tx) -> bool + Send + 'static) {
-        #[cfg(test)]
-        if let Some(sink) = &self.sink {
-            sink.push(Box::new(f));
-            return;
-        }
-        self.handle.update_if(f);
+        self.delivery().deliver(f);
     }
 }
 
@@ -56,7 +83,7 @@ impl Rt {
 /// thread (a long command's progress), where [`blocking`] has one reply.
 /// Updates are dropped in a headless scene's fixture state.
 #[derive(Clone)]
-pub struct UiQueue(Rt);
+pub struct UiQueue(Deliver);
 
 impl UiQueue {
     pub fn deliver(&self, f: impl FnOnce(&mut State, &mut Tx) -> bool + Send + 'static) {
@@ -68,7 +95,7 @@ impl UiQueue {
 }
 
 pub fn ui_queue(s: &State) -> UiQueue {
-    UiQueue(s.rt.clone())
+    UiQueue(s.rt.delivery())
 }
 
 pub fn flatten<T>(
@@ -135,12 +162,12 @@ pub fn run_rerouted<F, Fut, T>(
     if s.fixture {
         return;
     }
-    let rt = s.rt.clone();
+    let delivery = s.rt.delivery();
     // Asked on this connection: a reply that lands after a switch to
     // another computer (or a reconnect) is dropped (`remote::lands`).
     let tag = s.remote.tag.clone();
     let Some(backend) = s.rt.backend.as_ref() else {
-        rt.deliver(move |s, tx| {
+        delivery.deliver(move |s, tx| {
             if s.fixture {
                 return false;
             }
@@ -161,13 +188,12 @@ pub fn run_rerouted<F, Fut, T>(
         return;
     };
     let job = backend.spawn(f);
-    let land = rt.clone();
     backend.spawn(move |_| async move {
         let result = flatten(job.await);
         if let Err(e) = &result {
             tracing::warn!(view = label, error = %e, "gateway request failed");
         }
-        land.deliver(move |s, tx| {
+        delivery.deliver(move |s, tx| {
             crate::energy::hit(crate::energy::C::UpdateJob);
             if s.fixture {
                 return false;
@@ -191,10 +217,10 @@ pub fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
     done: impl FnOnce(&mut State, T, &mut Tx) + Send + 'static,
 ) {
-    let rt = s.rt.clone();
+    let delivery = s.rt.delivery();
     std::thread::spawn(move || {
         let out = work();
-        rt.deliver(move |s, tx| {
+        delivery.deliver(move |s, tx| {
             crate::energy::hit(crate::energy::C::UpdateBlocking);
             if !s.fixture {
                 done(s, out, tx)
@@ -228,9 +254,9 @@ pub fn after_if(
     delay: Duration,
     f: impl FnOnce(&mut State, &mut Tx) -> bool + Send + 'static,
 ) {
-    let rt = s.rt.clone();
+    let delivery = s.rt.delivery();
     timers::schedule(delay, move || {
-        rt.deliver(move |s, tx| {
+        delivery.deliver(move |s, tx| {
             crate::energy::hit(crate::energy::C::UpdateTimer);
             !s.fixture && f(s, tx)
         });
@@ -477,6 +503,8 @@ pub mod harness {
         sink: Sink,
         /// How many completions ran.
         pub ran: usize,
+        /// Whether any completion asked for motion (`tx.animated()`).
+        pub asked_motion: bool,
     }
 
     impl Pump {
@@ -484,7 +512,11 @@ pub mod harness {
         pub fn install(s: &mut State) -> Pump {
             let sink = Sink::default();
             s.rt.sink = Some(sink.clone());
-            Pump { sink, ran: 0 }
+            Pump {
+                sink,
+                ran: 0,
+                asked_motion: false,
+            }
         }
 
         /// Run completions as they arrive until `done(s)` holds (checked
@@ -505,6 +537,9 @@ pub mod harness {
                 };
                 let mut tx = Tx::default();
                 f(s, &mut tx);
+                if crate::workspace::asked_motion(&tx) {
+                    self.asked_motion = true;
+                }
                 self.ran += 1;
             }
         }
@@ -587,5 +622,30 @@ mod tests {
         let mut second = Generation::default();
         assert_ne!(second.bump(), old);
         assert_ne!(Generation::unique(), Generation::default());
+    }
+
+    /// P1-B: a worker's delivery handle must never hold a `Backend` (Tokio
+    /// runtime), otherwise dropping it inside an async context panics.
+    #[test]
+    fn ui_queue_never_holds_backend_runtime() {
+        let mut s = crate::chat::fixtures::test_state();
+        let conn = zlo_client::Connection {
+            base_url: "http://127.0.0.1:9".into(),
+            token: zlo_client::Token::new("t").expect("token"),
+            token_source: "test".into(),
+        };
+        let backend = zlo_client::Client::new(conn)
+            .and_then(zlo_client::Backend::new)
+            .expect("backend");
+        s.rt.backend = Some(backend);
+        let q = super::ui_queue(&s);
+        // Drop the UI thread's reference to the backend; `q` must not keep it alive.
+        s.rt.backend = None;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async move {
+            drop(q);
+        });
     }
 }

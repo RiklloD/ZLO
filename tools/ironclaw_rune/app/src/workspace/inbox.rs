@@ -44,7 +44,7 @@ pub(super) use shelves::{jump_target, shelves};
 const POLL: Duration = Duration::from_secs(5);
 /// Poll period while a prompt sent here waits for the backend to list its
 /// run as working.
-const SENT_POLL: Duration = Duration::from_secs(1);
+pub(crate) const SENT_POLL: Duration = Duration::from_secs(1);
 /// How long a sent prompt shows its card as working without the backend
 /// confirming it (a send that never started a run stops claiming it).
 const SENT_GRACE: Duration = Duration::from_secs(30);
@@ -99,26 +99,26 @@ pub struct Inbox {
     /// working yet, with when they were sent. The read after a send can
     /// land before the backend marks the run; without this the card read
     /// "now" and nothing polled until the run ended.
-    pub(super) sent: BTreeMap<String, Sent>,
+    pub(crate) sent: BTreeMap<String, Sent>,
 }
 
 /// A prompt sent from this window, waiting for the backend to list its run.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct Sent {
-    pub(super) at: Instant,
+pub(crate) struct Sent {
+    pub(crate) at: Instant,
     /// The row's status when the prompt went out: a read still carrying it
     /// (an answered "Needs you") is stale, not the new run's.
-    pub(super) before: Option<InboxStatus>,
+    pub(crate) before: Option<InboxStatus>,
 }
 
 impl Sent {
-    fn live(&self) -> bool {
+    pub(crate) fn live(&self) -> bool {
         self.at.elapsed() < SENT_GRACE
     }
 
     /// The backend lists the new run: `status` is live and not the one the
     /// row had before the send.
-    fn confirmed_by(&self, status: Option<InboxStatus>) -> bool {
+    pub(crate) fn confirmed_by(&self, status: Option<InboxStatus>) -> bool {
         match status {
             Some(InboxStatus::Working | InboxStatus::Background) => true,
             Some(InboxStatus::NeedsInput) => self.before != status,
@@ -131,6 +131,16 @@ impl Inbox {
     #[cfg(test)]
     pub(crate) fn is_loading(&self) -> bool {
         self.loading
+    }
+
+    /// Clear transient request state on a computer switch while keeping
+    /// sidebar filters and computer-scoped UI state.
+    pub(crate) fn reset_for_switch(&mut self) {
+        self.loading = false;
+        self.stale = false;
+        self.shown = false;
+        self.settle_poll_until = 0;
+        self.sent.clear();
     }
 
     pub(super) fn new() -> Self {
@@ -570,6 +580,7 @@ pub fn refresh_shown(s: &mut State) {
     }
     s.workspace.inbox.shown = true;
     refresh(s);
+    crate::remote::peers::refresh(s);
 }
 
 /// A snapshot asked for before a profile change made here (`epoch` is the
@@ -717,6 +728,7 @@ pub(super) fn poll_due(s: &mut State) {
         return;
     }
     refresh(s);
+    crate::remote::peers::refresh(s);
     let every = if s.workspace.inbox.sent.is_empty() {
         POLL
     } else {

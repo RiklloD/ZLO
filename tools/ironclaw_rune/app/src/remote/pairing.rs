@@ -262,13 +262,13 @@ pub fn submit_ssh(s: &mut State) {
                 other => other?,
             };
             let port = code.backend_port.unwrap_or(ssh::DEFAULT_BACKEND_PORT);
-            let local = super::tunnel::open(&t, port)?;
-            Ok::<_, ssh::SshError>((code, port, local))
+            let (local, tunnel_lease) = super::tunnel::open(&t, port)?;
+            Ok::<_, ssh::SshError>((code, port, local, tunnel_lease))
         })
         .await
         .map_err(|e| PairError::Other(format!("SSH: {e}")))?
         .map_err(|e| PairError::Other(e.to_string()))?;
-        let (code, port, local) = opened;
+        let (code, port, local, _tunnel_lease) = opened;
         let host = target.host.clone();
         zlo_client::pairing::over_ssh(
             &ssh::tunnel_origin(local),
@@ -461,10 +461,26 @@ pub fn set_run_local(s: &mut State, on: bool) {
     if let Err(e) = super::save_registry(s) {
         s.remote.page.error = Some(e);
     }
-    if !on && !s.fixture {
+    let stopped_managed = if !on && !s.fixture {
         // Stops only the backend this app started.
         crate::service::set_allowed(false);
-        crate::service::stop();
+        crate::service::stop()
+    } else {
+        false
+    };
+    if !on && stopped_managed && !super::backend_is_remote(s) && !super::env_override() {
+        // The managed process was stopped: drop its dead client and leave
+        // `Conn::Ready` so turning the switch back on reconnects cleanly.
+        s.workspace.connect_gen.bump();
+        s.remote.page.pending_backend = None;
+        s.rt.backend = None;
+        s.remote.tag = super::ConnTag::default();
+        s.conn = crate::state::Conn::Failed {
+            message: "\"Run IronClaw on this Mac\" is off in Settings → Computers. \
+                      Turn it back on, start `zlo serve` yourself, or pick another computer."
+                .into(),
+            retry_in: None,
+        };
     }
     super::sync_local_backend(s);
     super::peers::sync(s);
