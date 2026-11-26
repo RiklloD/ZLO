@@ -428,6 +428,14 @@ pub fn fixture_draft(s: &mut State) {
     super::draft::place(s, vec![fixture_file(1, "PLAN.md")]);
 }
 
+/// The new-thread screen with the Local / New worktree menu open.
+pub fn fixture_draft_worktree_menu(s: &mut State) {
+    fixture_draft(s);
+    if let Some(d) = s.workspace.draft.as_mut() {
+        d.worktree_open = true;
+    }
+}
+
 fn fixture_file(key: u64, name: &str) -> zlo_client::attachments::StagedFile {
     zlo_client::attachments::StagedFile {
         key,

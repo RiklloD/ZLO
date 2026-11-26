@@ -322,6 +322,9 @@ pub struct SideState {
     /// so a profile edit moves it; a picked folder or a worktree does not.
     from_profile: bool,
     pub repo: Option<PathBuf>,
+    /// The branch checked out in `repo`, read with it and again on each
+    /// Changes refresh (the composer's place bar shows it).
+    head: Option<String>,
     /// The thread's own git worktree, when it has one: the coding tabs then
     /// read that folder, and the title shows its branch.
     pub worktree: Option<WorktreeView>,
@@ -686,6 +689,7 @@ pub(crate) fn set_folder(s: &mut State, folder: PathBuf, remember: bool) {
     x.folder = Some(folder.clone());
     x.from_profile = false;
     x.repo = None;
+    x.head = None;
     x.project = Default::default();
     x.changes = Default::default();
     x.history = Default::default();
@@ -694,12 +698,17 @@ pub(crate) fn set_folder(s: &mut State, folder: PathBuf, remember: bool) {
     let generation = x.folder_gen.bump();
     jobs::blocking(
         s,
-        move || git::root(&folder).ok(),
-        move |s, repo, _| {
+        move || {
+            let repo = git::root(&folder).ok();
+            let head = repo.as_deref().map(|r| git::branch(r).name);
+            (repo, head)
+        },
+        move |s, (repo, head), _| {
             let Some(x) = side_of(s, &thread).filter(|x| x.folder_gen == generation) else {
                 return;
             };
             x.repo = repo;
+            x.head = head;
             let card_open = x.session_open;
             load_shown(s);
             if card_open {
@@ -755,6 +764,46 @@ pub fn adopt_folder(s: &mut State, root: PathBuf) {
 /// The project folder of the open chat, for other areas (mentions).
 pub fn folder(s: &State) -> Option<&Path> {
     side(s).and_then(|x| x.folder.as_deref())
+}
+
+/// Where the open chat works, for the composer's place bar: its own git
+/// worktree when it has one, and the branch checked out there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Place {
+    /// The worktree's folder name and full path (the path is empty when
+    /// only the backend's sidebar row says the thread has one).
+    pub worktree: Option<(String, String)>,
+    pub branch: Option<String>,
+}
+
+/// The open chat's [`Place`]; `None` when it works outside git. The live
+/// branch read from the folder wins; a backend on another computer falls
+/// back to what the sidebar row and the profile report.
+pub fn place(s: &State) -> Option<Place> {
+    let chat = s.chat.as_ref()?;
+    let x = &chat.side;
+    let row = s.workspace.inbox.row(&chat.thread_id);
+    let bound = x.worktree.as_ref().filter(|w| w.bound());
+    let worktree = match bound {
+        Some(w) => {
+            let name = Path::new(&w.path)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| w.path.clone());
+            Some((name, w.path.clone()))
+        }
+        None => row
+            .and_then(|r| r.worktree_branch.as_ref())
+            .map(|_| ("Worktree".to_string(), String::new())),
+    };
+    let branch = x
+        .head
+        .clone()
+        .or_else(|| bound.map(|w| w.branch.clone()))
+        .or_else(|| row.and_then(|r| r.worktree_branch.clone()))
+        .or_else(|| bridge::profile(s).and_then(|(_, _, branch)| branch))
+        .filter(|b| !b.is_empty());
+    (worktree.is_some() || branch.is_some()).then_some(Place { worktree, branch })
 }
 
 fn pick_project_folder(tx: &mut Tx) {
@@ -1220,5 +1269,97 @@ mod tests {
             link_target("file:///tmp/a.txt"),
             Link::Local("/tmp/a.txt".into())
         );
+    }
+
+    /// The composer's place line: a worktree thread names its worktree
+    /// folder and the branch read there; a thread in its project folder
+    /// says Local with its branch; with no live read (a backend on another
+    /// computer) the sidebar row's worktree branch still says it has one.
+    #[test]
+    fn the_place_names_the_worktree_and_its_branch() {
+        use super::{Place, place};
+        let mut s = crate::chat::fixtures::test_state();
+        super::fixtures::worktree_place(&mut s);
+        assert_eq!(
+            place(&s),
+            Some(Place {
+                worktree: Some((
+                    "port-the-frontend-60f1b999".into(),
+                    "/Users/you/.zlo/worktrees/3f9a/port-the-frontend-60f1b999".into()
+                )),
+                branch: Some("zlo/port-the-frontend-60f1b999".into()),
+            })
+        );
+        // The agent switched branch inside the worktree: the live read wins.
+        if let Some(c) = s.chat.as_mut() {
+            c.side.head = Some("fix/tests".into());
+        }
+        assert_eq!(place(&s).and_then(|p| p.branch), Some("fix/tests".into()));
+
+        let mut s = crate::chat::fixtures::test_state();
+        super::fixtures::local_place(&mut s);
+        assert_eq!(
+            place(&s),
+            Some(Place {
+                worktree: None,
+                branch: Some("main".into()),
+            })
+        );
+
+        // Nothing read locally: the sidebar row's worktree branch.
+        if let Some(c) = s.chat.as_mut() {
+            c.side.head = None;
+        }
+        assert_eq!(place(&s), None, "no git at all: no line");
+        let mut row = crate::workspace::fixtures::row(
+            "t1",
+            "Port",
+            "work",
+            zlo_client::inbox::InboxState::Inbox,
+            1,
+        );
+        row.worktree_branch = Some("zlo/port-1".into());
+        s.workspace.inbox.list.rows.push(row);
+        assert_eq!(
+            place(&s),
+            Some(Place {
+                worktree: Some(("Worktree".into(), String::new())),
+                branch: Some("zlo/port-1".into()),
+            })
+        );
+    }
+
+    /// The line sits under the chat's composer card, worktree at its left
+    /// end and branch at its right, inside the card's width.
+    #[test]
+    fn the_place_line_sits_under_the_composer() {
+        use rune::{Env, Runtime};
+        let mut s = crate::chat::fixtures::test_state();
+        super::fixtures::worktree_place(&mut s);
+        let mut rt = Runtime::new(s, crate::view, (1280., 820.), Env::new(true, 1.));
+        let mut t = 0.;
+        for _ in 0..60 {
+            t += 1. / 60.;
+            rt.frame(t);
+        }
+        let (card, _) = rt.presented("composer:t1").expect("composer drawn");
+        let (wt, _) = rt.presented("composer-worktree").expect("worktree drawn");
+        let (branch, _) = rt.presented("composer-branch").expect("branch drawn");
+        // [x, y, w, h]
+        assert!(
+            wt[1] >= card[1] + card[3],
+            "under the card: {wt:?} {card:?}"
+        );
+        assert!(
+            wt[0] >= card[0] && wt[0] < card[0] + 20.,
+            "at its left: {wt:?}"
+        );
+        let card_right = card[0] + card[2];
+        let branch_right = branch[0] + branch[2];
+        assert!(
+            branch_right <= card_right && branch_right > card_right - 20.,
+            "at its right: {branch:?} {card:?}"
+        );
+        assert!(wt[3] <= 24., "one short line: {wt:?}");
     }
 }

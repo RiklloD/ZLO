@@ -36,6 +36,7 @@ pub mod orchestration;
 mod outline;
 mod pace;
 mod pending;
+pub mod place_bar;
 pub mod plan_strip;
 pub mod prewarm;
 mod question_form;

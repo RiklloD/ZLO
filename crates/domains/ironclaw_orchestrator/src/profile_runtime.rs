@@ -244,11 +244,15 @@ impl Engine {
             .await
             .into_iter()
             .map(|(rt, p)| {
+                // A thread on this provider can start in its own worktree.
+                let worktrees = self
+                    .runtime(&rt)
+                    .is_ok_and(|runtime| runtime.supports_work_dir());
                 json!({
                     "provider": p.provider, "name": p.name, "runtime": rt.as_str(),
                     "authenticated": p.authenticated, "models": p.models,
                     "efforts": p.efforts, "modelEfforts": p.model_efforts,
-                    "brand": p.brand, "launch": p.launch,
+                    "brand": p.brand, "launch": p.launch, "worktrees": worktrees,
                 })
             })
             .collect();
