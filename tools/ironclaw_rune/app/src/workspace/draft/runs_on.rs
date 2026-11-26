@@ -22,6 +22,14 @@ use crate::workspace::ui::{self, XS, t};
 /// An unsent new-thread draft carried across a computer focus switch.
 #[derive(Clone)]
 pub(crate) struct CarriedDraft {
+    /// Computer key the draft was moved from (its saved copy is retired only
+    /// after the move lands on `target`).
+    source: String,
+    /// Intended destination computer key.
+    target: String,
+    /// For async cold switches, the `connect_gen` of that switch attempt so a
+    /// superseding switch cannot consume this carry.
+    connect_gen: Option<crate::jobs::Generation>,
     profile: String,
     text: String,
     caret: usize,
@@ -122,13 +130,17 @@ pub(crate) fn pick(s: &mut State, key: String) {
     if let Some(d) = s.workspace.draft.as_mut() {
         d.runs_on_open = false;
     }
-    if s.onboarding.computer.key() == key {
+    let source = s.onboarding.computer.key();
+    if source == key {
         return;
     }
     if !crate::workspace::triage::is_triage_draft(s)
         && let Some(d) = s.workspace.draft.as_ref()
     {
         s.workspace.carried_draft = Some(CarriedDraft {
+            source,
+            target: key.clone(),
+            connect_gen: None,
             profile: d.profile.clone(),
             text: d.input.text.clone(),
             caret: d.input.range().1,
@@ -141,6 +153,18 @@ pub(crate) fn pick(s: &mut State, key: String) {
         });
     }
     peers::focus(s, &key);
+    // For a synchronous handover, `connected` already consumed the carry.
+    // For an async cold switch, bind it to this switch's `connect_gen` so a
+    // superseding switch cannot consume it; if no switch started, drop it.
+    if let Some(carried) = s.workspace.carried_draft.as_mut()
+        && carried.target == key
+    {
+        if s.remote.switching.is_some() {
+            carried.connect_gen = Some(s.workspace.connect_gen);
+        } else {
+            s.workspace.carried_draft = None;
+        }
+    }
 }
 
 /// Check the "New threads start on" preference when opening a fresh draft.
@@ -161,6 +185,9 @@ pub(super) fn apply_default_on_open(s: &mut State) -> DefaultOutcome {
     match peers::get(s, &target_key) {
         Some(peer) if peer.conn == PeerConn::Ready => {
             s.workspace.carried_draft = Some(CarriedDraft {
+                source: s.onboarding.computer.key(),
+                target: target_key.clone(),
+                connect_gen: None,
                 profile: DEFAULT_PROFILE_ID.into(),
                 text: String::new(),
                 caret: 0,
@@ -204,30 +231,84 @@ pub(crate) fn connected(s: &mut State) -> bool {
     let Some(carried) = s.workspace.carried_draft.take() else {
         return false;
     };
+    // Only consume the carry when focus landed on its intended destination for
+    // its own switch attempt. A superseding switch discards the stale carry
+    // while leaving the source computer's saved draft intact on disk.
+    if carried.target != s.onboarding.computer.key()
+        || carried
+            .connect_gen
+            .is_some_and(|g| g != s.workspace.connect_gen)
+    {
+        return false;
+    }
     if carried.from_new_draft {
         super::open(s);
         return true;
     }
+    let existing = crate::drafts::restore(s, crate::drafts::NEW_THREAD);
+    let carried_empty =
+        carried.text.trim().is_empty() && carried.pills.is_empty() && carried.staged.is_empty();
     let list = &s.workspace.inbox.list;
+    let preferred_profile = if carried_empty {
+        existing
+            .as_ref()
+            .and_then(|d| d.profile.clone())
+            .unwrap_or_else(|| carried.profile.clone())
+    } else {
+        carried.profile.clone()
+    };
     let profile = if list
         .profiles
         .iter()
-        .any(|p| p.profile_id == carried.profile)
+        .any(|p| p.profile_id == preferred_profile)
     {
-        carried.profile
+        preferred_profile
     } else {
         list.last_used_profile_id
             .clone()
             .or_else(|| list.profiles.first().map(|p| p.profile_id.clone()))
             .unwrap_or_else(|| DEFAULT_PROFILE_ID.into())
     };
+    let (merged_text, merged_pills, merged_staged, caret) = match existing {
+        Some(saved) if carried_empty => {
+            let pills: Vec<_> = saved.tokens.into_iter().map(|t| (t.range, t.id)).collect();
+            let caret = saved.text.len();
+            (saved.text, pills, saved.files, caret)
+        }
+        Some(saved) => {
+            // Preserve the destination's existing unsent draft at the top and
+            // append the carried draft below it so nothing is ever lost.
+            let mut text = saved.text;
+            let mut pills: Vec<_> = saved.tokens.into_iter().map(|t| (t.range, t.id)).collect();
+            let mut staged = saved.files;
+            let offset = if text.is_empty() {
+                0
+            } else {
+                text.push_str("\n\n");
+                text.len()
+            };
+            text.push_str(&carried.text);
+            pills.extend(
+                carried
+                    .pills
+                    .into_iter()
+                    .map(|(r, id)| ((r.start + offset)..(r.end + offset), id)),
+            );
+            staged.extend(carried.staged);
+            let caret = (offset + carried.caret).min(text.len());
+            (text, pills, staged, caret)
+        }
+        None => {
+            let caret = carried.caret.min(carried.text.len());
+            (carried.text, carried.pills, carried.staged, caret)
+        }
+    };
     let mut draft = empty_draft(&profile);
-    draft.staged = carried.staged;
+    draft.staged = merged_staged;
     draft.worktree = carried.worktree;
     draft.fresh = false;
-    inline_files::set_content(&mut draft.input, &carried.text, &carried.pills);
-    let caret = carried.caret.min(draft.input.text.len());
-    draft.input.set_caret(caret);
+    inline_files::set_content(&mut draft.input, &merged_text, &merged_pills);
+    draft.input.set_caret(caret.min(draft.input.text.len()));
     draft.input.focused = true;
     let generation = s.workspace.draft_opens.bump();
     draft.generation = generation;
@@ -238,6 +319,11 @@ pub(crate) fn connected(s: &mut State) -> bool {
     crate::chat::model_picker::draft_carry_pick(s, carried.model_pick, carried.effort);
     crate::chat::model_picker::draft_set_profile(s, profile, catalog);
     record(s);
+    // Retire the source computer's saved copy only after the move has landed on
+    // the destination, so switching back cannot resurrect a duplicate draft.
+    if carried.source != carried.target {
+        crate::drafts::remove_for(s, &carried.source, crate::drafts::NEW_THREAD);
+    }
     true
 }
 

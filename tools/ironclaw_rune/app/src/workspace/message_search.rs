@@ -90,6 +90,12 @@ impl MessageSearch {
         self.complete = true;
     }
 
+    /// Clear cached results and pending searches when focus moves to another
+    /// computer so hits from one computer never show on another's rows.
+    pub(crate) fn reset_for_switch(&mut self) {
+        *self = Self::default();
+    }
+
     /// When `poll` should look again.
     pub(super) fn due(&self) -> Option<Instant> {
         self.pending.as_ref().map(|(at, ..)| *at)

@@ -387,6 +387,20 @@ pub fn remove(s: &mut State, key: &str) {
     record(s, key, Draft::text(""));
 }
 
+/// Delete a draft belonging to `scope` (a computer key), even after focus has
+/// moved to another computer.
+pub fn remove_for(s: &mut State, scope: &str, key: &str) {
+    let scoped = scoped_for(scope, key);
+    let store = &mut s.workspace.drafts;
+    if store.drafts.remove(&scoped).is_none() {
+        return;
+    }
+    store.dirty.insert(scoped);
+    store.generation += 1;
+    let generation = store.generation;
+    jobs::after_if(s, SAVE_DELAY, move |s, _| save_due(s, generation));
+}
+
 /// Hand the changed drafts to the app's one ordered writer (`persist`):
 /// writes and deletions of a draft land in the order they were made, each
 /// file is replaced atomically, and a failed write stays queued for a

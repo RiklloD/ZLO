@@ -49,6 +49,20 @@ pub struct ThreadDrag {
     draft: Option<[f32; 4]>,
 }
 
+impl ThreadDrag {
+    /// Drop any in-progress drag and stale target rects when focus moves to
+    /// another computer.
+    pub(crate) fn reset_for_switch(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// Only threads owned by the currently focused computer may drop onto the
+/// focused computer's chat or draft composer.
+fn can_drop(s: &State, dragged: &Dragged) -> bool {
+    dragged.computer == s.onboarding.computer.key()
+}
+
 /// Where a release lands.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Target {
@@ -149,7 +163,7 @@ pub fn target_at(s: &State, at: [f32; 2]) -> Option<Target> {
 
 /// Attach `dragged` to the target under its pointer, if any.
 pub fn drop_at(s: &mut State, dragged: Dragged) {
-    if dragged.computer != s.onboarding.computer.key() {
+    if !can_drop(s, &dragged) {
         return;
     }
     match target_at(s, dragged.at) {
@@ -168,7 +182,7 @@ fn hovered(s: &State) -> Option<Target> {
         .thread_drag
         .dragged
         .as_ref()
-        .filter(|d| d.live)?;
+        .filter(|d| d.live && can_drop(s, d))?;
     target_at(s, dragged.at)
 }
 
@@ -450,5 +464,59 @@ mod tests {
                 .is_some_and(|d| !d.input.focused)
         );
         assert_eq!(rt.state.page, Page::Draft);
+    }
+
+    /// Dragging a peer computer's row never highlights a drop target on the
+    /// focused computer and never drops onto it.
+    #[test]
+    fn dragging_a_peer_row_neither_highlights_nor_drops() {
+        let mut s = state();
+        s.page = Page::Draft;
+        s.workspace.draft = Some(super::super::draft::empty_draft("p"));
+        if let Some(d) = s.workspace.draft.as_mut() {
+            d.input.focused = false;
+        }
+        let mut rt = Runtime::new(
+            s,
+            |_s: &State, _: &mut Cx<State>| {
+                let source =
+                    el().key("peer-source")
+                        .size(100., 40.)
+                        .on_drag(|s: &mut State, d, tx| {
+                            drag(s, "studio", "t-peer", "Peer thread", d, tx)
+                        });
+                let target = el()
+                    .key("target")
+                    .pin(Some(200.), Some(150.), None, None)
+                    .size(160., 100.)
+                    .on_drawn_layout_tx(saw_draft);
+                col().w_full().h_full().child(source).child(target)
+            },
+            (400., 300.),
+            Env::new(true, 1.),
+        );
+        rt.frame(0.);
+        rt.frame(0.);
+
+        rt.pointer_move(20., 20.);
+        rt.pointer_down(20., 20.);
+        step(&mut rt);
+        rt.pointer_move(250., 200.);
+        step(&mut rt);
+        assert!(
+            !over_draft(&rt.state),
+            "peer row drag must not highlight the focused draft target"
+        );
+
+        rt.pointer_up(250., 200.);
+        step(&mut rt);
+        assert!(
+            rt.state
+                .workspace
+                .draft
+                .as_ref()
+                .is_some_and(|d| !d.input.focused),
+            "peer row drop must not attach to the focused draft"
+        );
     }
 }

@@ -103,14 +103,14 @@ fn open_peer(s: &mut State, key: &str, generation: Generation, r: Resolved, tx: 
     let job = backend.spawn(|c| async move {
         let session = c.session().await?;
         let inbox = c.inbox().await?;
-        let notifications = match c.list_notifications(ALERT_PAGE).await {
-            Ok(page) => page.notifications,
+        let (notifications, unread_count) = match c.list_notifications(ALERT_PAGE).await {
+            Ok(page) => (page.notifications, page.unread_count),
             Err(e) => {
                 tracing::debug!(error = %e, "peer notifications read failed");
-                Vec::new()
+                (Vec::new(), 0)
             }
         };
-        Ok::<_, ClientError>((session, inbox, notifications))
+        Ok::<_, ClientError>((session, inbox, notifications, unread_count))
     });
     backend.spawn(move |_| async move {
         let result = crate::jobs::flatten(job.await);
@@ -136,7 +136,7 @@ fn open_peer(s: &mut State, key: &str, generation: Generation, r: Resolved, tx: 
                 return false;
             };
             match result {
-                Ok((session, inbox, notifications)) => {
+                Ok((session, inbox, notifications, unread_count)) => {
                     if let (Computer::Remote(r), Some(d)) = (&computer, descriptor.as_ref())
                         && s.remote
                             .registry
@@ -152,6 +152,7 @@ fn open_peer(s: &mut State, key: &str, generation: Generation, r: Resolved, tx: 
                         peer.session = Some(session);
                         peer.inbox = Some(inbox);
                         peer.notifications = notifications;
+                        peer.unread_count = unread_count;
                         peer.backend = Some(backend);
                         peer.descriptor = descriptor;
                         peer.tunnel = tunnel;
@@ -248,7 +249,7 @@ pub(super) fn refresh_peer(s: &mut State, key: &str) {
     let job = backend.spawn(|c| async move {
         let inbox = c.inbox().await?;
         let notifications = match c.list_notifications(ALERT_PAGE).await {
-            Ok(page) => Some(page.notifications),
+            Ok(page) => Some((page.notifications, page.unread_count)),
             Err(e) => {
                 tracing::debug!(error = %e, "peer notifications refresh failed");
                 None
@@ -275,8 +276,9 @@ pub(super) fn refresh_peer(s: &mut State, key: &str) {
             match result {
                 Ok((inbox, notifications)) => {
                     peer.inbox = Some(inbox);
-                    if let Some(notifications) = notifications {
+                    if let Some((notifications, unread_count)) = notifications {
                         peer.notifications = notifications;
+                        peer.unread_count = unread_count;
                     }
                     if arm_poll && peer_needs_poll(peer) {
                         if peer.poll_at.is_none() {

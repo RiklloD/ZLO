@@ -691,6 +691,7 @@ pub(crate) fn reset_for_switch(s: &mut State) {
     s.workspace.confirm_delete = None;
     s.workspace.focused_unread = 0;
     s.workspace.unread = 0;
+    crate::workspace::reset_for_switch(s);
     // Warm threads belong to the computer they were fetched from; the same
     // thread id on another computer is another thread.
     s.prewarm = Default::default();
