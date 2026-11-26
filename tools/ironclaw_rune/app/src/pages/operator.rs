@@ -138,7 +138,7 @@ fn top(s: &State, k: &Kit) -> El {
             .key("refresh-operator")
             .press_scale(motion::PRESS),
     ];
-    let tabs = crate::pages::common::tab_bar(k, "operator-tabs", &TABS, o.tab, show).pb(16.);
+    let tabs = crate::pages::common::tab_bar_still(k, "operator-tabs", &TABS, o.tab, show).pb(16.);
     col()
         .w_full()
         .child(header_with(p, "Operator", actions))
