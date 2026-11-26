@@ -47,6 +47,37 @@ struct OwnedSkillBundleFile {
     contents: Vec<u8>,
 }
 
+impl SkillBundleSnapshot {
+    /// Every file of the bundle, by its path inside the skill.
+    pub(crate) fn into_files(self) -> Vec<(String, Vec<u8>)> {
+        self.files
+            .into_iter()
+            .map(|file| (file.relative_path, file.contents))
+            .collect()
+    }
+
+    /// A bundle from files carried from elsewhere. Paths are checked when it
+    /// is restored; its source is read from its install metadata, as a
+    /// capture does.
+    pub(crate) fn from_files(files: Vec<(String, Vec<u8>)>) -> Self {
+        let source = files
+            .iter()
+            .find(|(path, _)| path == INSTALL_METADATA_FILE_NAME)
+            .map(|(_, contents)| install_metadata_source(SkillSource::User, contents))
+            .unwrap_or(SkillSource::User);
+        Self {
+            files: files
+                .into_iter()
+                .map(|(relative_path, contents)| OwnedSkillBundleFile {
+                    relative_path,
+                    contents,
+                })
+                .collect(),
+            source,
+        }
+    }
+}
+
 pub(crate) async fn capture_skill_bundle(
     context: &SkillManagementContext,
     skill_name: &str,

@@ -6,9 +6,13 @@ use std::sync::Arc;
 
 use ironclaw_assistant::config_sync::approvals::ApprovalsDomainHandler;
 use ironclaw_assistant::config_sync::config::ConfigDomainHandler;
+use ironclaw_assistant::config_sync::memory::MemoryDomainHandler;
+use ironclaw_assistant::config_sync::memory_base::SettingsMemorySyncBase;
 use ironclaw_assistant::config_sync::orchestrator_settings::OrchestratorSettingsDomainHandler;
 use ironclaw_assistant::config_sync::profiles::ProfilesDomainHandler;
 use ironclaw_assistant::config_sync::prompts::PromptsDomainHandler;
+use ironclaw_assistant::config_sync::skill_usage::SkillUsageDomainHandler;
+use ironclaw_assistant::config_sync::skills::SkillsDomainHandler;
 use ironclaw_assistant::config_sync::{ConfigSyncService, ConfigSyncSurface};
 use ironclaw_product_contracts::surface::ProductSurface;
 
@@ -41,7 +45,22 @@ pub(crate) fn wrap(
             Vec::new(),
             Some(runtime.extension_management.clone()),
         )),
+    )))
+    .with_handler(Arc::new(SkillsDomainHandler::new(Arc::clone(
+        &runtime.skill_management,
+    ))))
+    .with_handler(Arc::new(SkillUsageDomainHandler::new(
+        runtime.skill_usage.clone(),
     )));
+    // Only the native provider's memory is documents this host can carry.
+    if let Some(documents) = runtime.memory_page.documents.clone() {
+        service = service.with_handler(Arc::new(MemoryDomainHandler::new(
+            documents,
+            Arc::new(SettingsMemorySyncBase::new(Arc::clone(
+                &runtime.extension_filesystem,
+            ))),
+        )));
+    }
     if let Some(engine) = runtime.orchestrator.as_ref() {
         service = service
             .with_handler(Arc::new(OrchestratorSettingsDomainHandler::new(

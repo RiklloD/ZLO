@@ -17,7 +17,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use zlo_client::config_sync::{Side, SyncOutcome, SyncReport, sync_once};
+use zlo_client::config_sync::{Side, SyncMemo, SyncOutcome, SyncReport, sync_once};
 use zlo_client::environments::THIS_MAC;
 use zlo_client::{Backend, ClientError};
 
@@ -50,6 +50,9 @@ struct Row {
     checked_at: Option<Instant>,
     /// Checked again on the next [`sync`].
     due: bool,
+    /// Domains that differ by design and need no carrying
+    /// (`zlo_client::config_sync::SyncMemo`).
+    memo: SyncMemo,
     /// Config sections waiting for that computer's IronClaw to restart.
     /// Kept across later passes; forgotten when its connection goes.
     restart: Vec<String>,
@@ -100,12 +103,15 @@ pub fn set_enabled(s: &mut State, key: &str, on: bool) {
 
 /// The person's "Sync now".
 pub fn sync_now(s: &mut State, key: &str) {
-    s.remote
+    let row = s
+        .remote
         .config_sync
         .rows
         .entry(key.to_string())
-        .or_default()
-        .due = true;
+        .or_default();
+    row.due = true;
+    // Asked for by hand: everything is compared again.
+    row.memo.clear();
     sync(s);
 }
 
@@ -175,18 +181,24 @@ pub fn sync(s: &mut State) {
         let run = state.next_run;
         row.running = Some(run);
         row.due = false;
+        let memo = row.memo.clone();
         let delivery = s.rt.delivery();
         let from = source.client().clone();
         let key = key.clone();
         // Only clients travel: no backend is dropped off the UI thread.
         target.spawn(move |to| async move {
-            let result = sync_once(&from, &to, &BTreeSet::new()).await;
+            let result = sync_once(&from, &to, &BTreeSet::new(), memo).await;
             delivery.deliver(move |s, _| finished(s, &key, run, result));
         });
     }
 }
 
-fn finished(s: &mut State, key: &str, run: u64, result: Result<SyncOutcome, ClientError>) -> bool {
+fn finished(
+    s: &mut State,
+    key: &str,
+    run: u64,
+    result: Result<(SyncOutcome, SyncMemo), ClientError>,
+) -> bool {
     crate::energy::hit(crate::energy::C::UpdateJob);
     if s.fixture {
         return false;
@@ -199,6 +211,10 @@ fn finished(s: &mut State, key: &str, run: u64, result: Result<SyncOutcome, Clie
     }
     row.running = None;
     row.checked_at = Some(Instant::now());
+    let result = result.map(|(outcome, memo)| {
+        row.memo = memo;
+        outcome
+    });
     row.phase = match result {
         Ok(SyncOutcome::UpToDate) => Phase::Matches,
         Ok(SyncOutcome::Applied(report)) => {

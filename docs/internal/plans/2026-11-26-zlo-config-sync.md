@@ -503,3 +503,38 @@ The open questions above, settled:
    off (Settings → Computers), because the box is meant to mirror the Mac.
 8. **Never synced**, as listed in 3.4: identity, devices, peer links, CLI
    logins, macOS-only state, threads, runs, events and history.
+
+## 7. As built (2026-11-26)
+
+Phases 1, 2 and 5 are in. What differs from the sketch above:
+
+- **Carrier.** The app compares the two manifests and moves only domains
+  whose hashes differ (`zlo_client::config_sync::sync_once`). It checks when
+  a computer connects, when the window comes back, when a page is left and
+  on "Sync now"; there is no timer. Snapshots pass through the app as JSON
+  it does not interpret.
+- **Pages.** `skills` and `memory` are *itemized*: exported alone, one page
+  at a time (about 2 MiB of content), after the receiver's index
+  (`index_only`), with content only for items the receiver lacks (`have`,
+  `after`). No request exceeds the 4 MiB snapshot limit. An item larger
+  than a page is not carried and is reported.
+- **Two-way.** `memory` and `skill_usage` get a return leg (target to
+  source) with `merge_back`, which only merges.
+  - Skill usage: uses merge (larger count, later use); pins mirror the Mac.
+  - Memory: three-way against a per-peer base kept under
+    `/system/settings/config-sync/memory-base/`. A document changed on one
+    side moves; one removed on a side stays removed there; one changed on
+    both is settled once (the longer wins when it continues the other,
+    otherwise the Mac's text takes the path and the other is kept under
+    `sync-conflicts/<hash>/…` on both). Archiving does not propagate yet.
+- **Skills.** One-way, whole bundles, Mac wins; skills only the target has
+  are kept; system skills are never carried.
+- **Settled differences.** A domain that differs by design (the target
+  keeps items of its own) is remembered by its pair of hashes for the app
+  session and not carried again until either side changes.
+- **Failure isolation.** A domain a backend cannot read is left out of its
+  manifest; a domain whose store fails on apply is reported as skipped and
+  the others still apply.
+
+Left: phase 3 (provider catalog and keys), phase 4 (extensions, hooks,
+automations), phase 6 (CLI home rules files).

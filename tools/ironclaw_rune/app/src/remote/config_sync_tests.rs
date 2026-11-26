@@ -237,3 +237,86 @@ fn a_reply_for_a_computer_that_went_away_is_dropped() {
     settle(&mut s, &mut pump);
     assert!(s.remote.config_sync.rows.is_empty());
 }
+
+fn memory_manifest(id: &str, memory: &str) -> Answer {
+    Answer::ok(
+        serde_json::json!({
+            "schema_version": 1,
+            "environment_id": id,
+            "os": "linux",
+            "domains": {
+                "memory": {"hash": memory, "item_count": 1},
+                "a_domain_from_a_newer_backend": {"hash": "x", "item_count": 0}
+            }
+        })
+        .to_string(),
+    )
+}
+
+fn memory_page(id: &str) -> Answer {
+    Answer::ok(
+        serde_json::json!({
+            "outcome": "exported",
+            "schema_version": 1,
+            "source_environment_id": id,
+            "source_os": "macos",
+            "generated_at": "2026-11-26T00:00:00Z",
+            "domains": {
+                "memory": {"hash": "m", "items": [{"key": "MEMORY.md", "hash": "h"}]}
+            }
+        })
+        .to_string(),
+    )
+}
+
+fn memory_applied(count: u64) -> Answer {
+    Answer::ok(
+        serde_json::json!({
+            "outcome": "completed",
+            "schema_version": 1,
+            "target_environment_id": "x",
+            "domains": {
+                "memory": {"status": if count > 0 { "applied" } else { "skipped_unchanged" },
+                           "applied_count": count, "skipped_count": 0}
+            }
+        })
+        .to_string(),
+    )
+}
+
+#[test]
+fn memory_goes_there_and_comes_back_and_a_settled_difference_is_not_carried_again() {
+    let (mut s, mut pump, gw_a, gw_b) = two_computers(Computer::ThisMac);
+    gw_a.route("/config-sync/manifest", memory_manifest("mac", "m1"));
+    gw_b.route("/config-sync/manifest", memory_manifest("env-b", "m2"));
+    for gw in [&gw_a, &gw_b] {
+        gw.route("/config-sync/export", memory_page("x"));
+        gw.route("/config-sync/apply", memory_applied(0));
+    }
+    config_sync::sync(&mut s);
+    settle(&mut s, &mut pump);
+    // Each leg: the receiver's index, then the sender's page, then the
+    // receiver's apply. The return leg writes This Mac (merge only).
+    assert_eq!(gw_a.requests_to("/config-sync/export"), 2);
+    assert_eq!(gw_b.requests_to("/config-sync/export"), 2);
+    assert_eq!(gw_b.requests_to("/config-sync/apply"), 1);
+    assert_eq!(gw_a.requests_to("/config-sync/apply"), 1);
+    assert_eq!(text(&s), "Settings match This Mac");
+
+    // Nothing was written and the hashes still differ (one side keeps a
+    // document the other removed): the next check reads the two manifests
+    // and carries nothing.
+    if let Some(row) = s.remote.config_sync.rows.get_mut("env-b") {
+        row.due = true;
+    }
+    config_sync::sync(&mut s);
+    settle(&mut s, &mut pump);
+    assert_eq!(gw_b.requests_to("/config-sync/manifest"), 2);
+    assert_eq!(gw_a.requests_to("/config-sync/export"), 2);
+    assert_eq!(gw_b.requests_to("/config-sync/apply"), 1);
+
+    // "Sync now" compares everything again.
+    config_sync::sync_now(&mut s, "env-b");
+    settle(&mut s, &mut pump);
+    assert_eq!(gw_b.requests_to("/config-sync/apply"), 2);
+}
