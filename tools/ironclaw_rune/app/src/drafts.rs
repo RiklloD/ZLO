@@ -387,6 +387,21 @@ pub fn remove(s: &mut State, key: &str) {
     record(s, key, Draft::text(""));
 }
 
+/// Write a draft into `scope`'s slot (a computer key), whichever computer
+/// has the focus. An empty one deletes the slot.
+pub fn record_for(s: &mut State, scope: &str, key: &str, draft: Draft) {
+    if draft.is_empty() {
+        return remove_for(s, scope, key);
+    }
+    let scoped = scoped_for(scope, key);
+    let store = &mut s.workspace.drafts;
+    store.drafts.insert(scoped.clone(), draft);
+    store.dirty.insert(scoped);
+    store.generation += 1;
+    let generation = store.generation;
+    jobs::after_if(s, SAVE_DELAY, move |s, _| save_due(s, generation));
+}
+
 /// Delete a draft belonging to `scope` (a computer key), even after focus has
 /// moved to another computer.
 pub fn remove_for(s: &mut State, scope: &str, key: &str) {

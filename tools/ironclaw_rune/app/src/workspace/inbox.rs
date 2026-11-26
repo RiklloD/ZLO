@@ -707,6 +707,13 @@ pub(super) fn visit(s: &mut State, thread_id: &str) {
     }
 }
 
+/// Sent prompts came back with a computer that regained the focus
+/// (`remote::peers`): poll and tick as `apply` would have with them present.
+pub(crate) fn sent_restored(s: &mut State) {
+    ensure_poll(s);
+    ensure_tick(s);
+}
+
 fn ensure_poll(s: &mut State) {
     if s.workspace.timers.inbox.is_some() || !s.workspace.inbox.needs_poll() {
         return;

@@ -218,11 +218,10 @@ fn start(s: &mut State, mode: Mode) {
         let resolved = resolve(target, tokens, own_backend).await;
         delivery.deliver(move |s, _| {
             if s.fixture || s.workspace.connect_gen != generation {
-                let had_tunnel = resolved.as_ref().is_ok_and(|r| r.tunnel.is_some());
+                // Superseded: whatever it opened (a tunnel, also one a failed
+                // resolve dropped) has no adopter.
                 drop(resolved);
-                if had_tunnel {
-                    super::retain_tunnels(s);
-                }
+                super::retain_tunnels(s);
                 return false;
             }
             match resolved {
@@ -651,9 +650,17 @@ pub(super) fn switched(
 ) {
     let old = s.onboarding.computer.key();
     let changed = old != computer.key() || mode == Mode::Switch;
+    // Prompts sent just before leaving a computer: it becomes a peer below,
+    // and follows them until its backend lists their runs.
+    let mut left_sent = None;
     if changed {
         if let Some(id) = crate::workspace::active_id(s) {
-            s.remote.last_thread.insert(old, id.to_string());
+            s.remote.last_thread.insert(old.clone(), id.to_string());
+        }
+        if old != computer.key() {
+            let mut sent = std::mem::take(&mut s.workspace.inbox.sent);
+            sent.retain(|_, entry| entry.live());
+            left_sent = Some((old, sent)).filter(|(_, sent)| !sent.is_empty());
         }
         reset_for_switch(s);
     }
@@ -702,6 +709,9 @@ pub(super) fn switched(
     super::pairing::connected(s);
     super::linked::start_polling(s);
     super::peers::sync(s);
+    if let Some((key, sent)) = left_sent {
+        super::peers::carry_sent(s, &key, sent);
+    }
 }
 
 /// The app is on `computer` now: a new connection tag, so every reply
@@ -758,6 +768,10 @@ fn failed(s: &mut State, mode: Mode, problem: Problem) {
         super::failback::schedule(s);
         return;
     }
+    // The attempt a thread click rode on is over.
+    s.remote.pending_thread = None;
+    // A tunnel the failed attempt opened has no adopter.
+    super::retain_tunnels(s);
     if mode == Mode::Switch
         && let Some(sw) = s.remote.switching.take()
     {
@@ -766,13 +780,6 @@ fn failed(s: &mut State, mode: Mode, problem: Problem) {
         let key = active_key(&sw.target);
         s.remote.registry.active = sw.previous;
         s.workspace.carried_draft = None;
-        if s.remote
-            .pending_thread
-            .as_ref()
-            .is_some_and(|p| p.computer == key)
-        {
-            s.remote.pending_thread = None;
-        }
         let line = match &problem {
             Problem::Unreachable(m) | Problem::Blocked(m) => m.clone(),
         };

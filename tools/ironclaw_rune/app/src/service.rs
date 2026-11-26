@@ -42,6 +42,9 @@ struct Supervisor {
     stopping: AtomicBool,
     restarting: AtomicBool,
     running: AtomicBool,
+    /// `start` came while a stopped supervisor was still winding down: it
+    /// runs on (or a new one starts) instead of the start being lost.
+    again: AtomicBool,
 }
 
 fn supervisor() -> &'static Arc<Supervisor> {
@@ -52,6 +55,7 @@ fn supervisor() -> &'static Arc<Supervisor> {
             stopping: AtomicBool::new(false),
             restarting: AtomicBool::new(false),
             running: AtomicBool::new(false),
+            again: AtomicBool::new(false),
         })
     })
 }
@@ -183,6 +187,13 @@ pub fn start() {
     };
     let sup = supervisor().clone();
     if sup.running.swap(true, Ordering::SeqCst) {
+        // One supervisor at a time. A stopped one still winding down (its
+        // backend draining) is told to run on: it restarts the backend when
+        // the old one has exited, and never overlaps a second supervisor.
+        if sup.stopping.swap(false, Ordering::SeqCst) {
+            sup.restarting.store(true, Ordering::SeqCst);
+            sup.again.store(true, Ordering::SeqCst);
+        }
         return;
     }
     sup.stopping.store(false, Ordering::SeqCst);
@@ -195,8 +206,19 @@ pub fn start() {
         .spawn(move || {
             retire_launchd_jobs(&paths.home);
             stop_stale(&paths.home);
-            supervise(&sup, &paths, lifecycle);
+            loop {
+                supervise(&sup, &paths, lifecycle);
+                // Asked to run again after its stop had already ended the loop.
+                if !sup.again.swap(false, Ordering::SeqCst) || sup.stopping.load(Ordering::SeqCst) {
+                    break;
+                }
+                sup.restarting.store(false, Ordering::SeqCst);
+            }
             sup.running.store(false, Ordering::SeqCst);
+            // A start that arrived between that check and this line.
+            if sup.again.swap(false, Ordering::SeqCst) {
+                start();
+            }
         })
         .ok();
 }
@@ -277,8 +299,11 @@ pub fn stop_on_terminate() {}
 /// managing a local backend process.
 pub fn stop() -> bool {
     let sup = supervisor();
-    let was_running = sup.running.swap(false, Ordering::SeqCst);
+    // `running` is the supervisor thread's to clear, when it has ended: a
+    // start that comes first is handed to it (`start`), never a second one.
+    let was_running = sup.running.load(Ordering::SeqCst);
     let pid = backend_pid();
+    sup.again.store(false, Ordering::SeqCst);
     sup.stopping.store(true, Ordering::SeqCst);
     sup.restarting.store(false, Ordering::SeqCst);
     new_lifecycle();
@@ -715,6 +740,7 @@ mod tests {
             stopping: AtomicBool::new(false),
             restarting: AtomicBool::new(true),
             running: AtomicBool::new(true),
+            again: AtomicBool::new(false),
         };
         assert_eq!(classify_exit(&sup), ExitAction::RestartNow);
         // Flag is consumed once: a subsequent unexpected exit backs off.

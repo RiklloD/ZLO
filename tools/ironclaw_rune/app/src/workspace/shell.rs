@@ -196,6 +196,15 @@ fn failed(s: &State, p: &Palette, k: &Kit, message: &str, retry_in: Option<u64>)
     let local_triage = !crate::remote::backend_is_remote(s)
         && !s.remote.app_only
         && !crate::remote::env_override();
+    // This Mac's own backend was switched off (Settings → Computers, which
+    // this screen covers): the way back is here.
+    let local_off = local_triage && !s.remote.registry.run_local_backend;
+    // Computers already connected in the background: one press away.
+    let ready_peers: Vec<(String, String)> = crate::remote::peers::list(s)
+        .into_iter()
+        .filter(|peer| peer.conn == crate::remote::peers::PeerConn::Ready)
+        .map(|peer| (peer.computer.key(), peer.computer.label()))
+        .collect();
     let mut c = col()
         .key("failed")
         .w_full()
@@ -223,6 +232,22 @@ fn failed(s: &State, p: &Palette, k: &Kit, message: &str, retry_in: Option<u64>)
                     .on_press(super::retry_connect)
                     .build(k),
             )
+            .children(local_off.then(|| {
+                rune_kit::Button::new("Run IronClaw on this Mac")
+                    .icon(&icons::MONITOR)
+                    .help("Turn this Mac's backend back on")
+                    .on_press(|s: &mut State| crate::remote::pairing::set_run_local(s, true))
+                    .build(k)
+                    .key("failed-run-local")
+            }))
+            .children(ready_peers.into_iter().map(|(key, label)| {
+                rune_kit::Button::new(format!("Use {label}"))
+                    .icon(&icons::MONITOR)
+                    .help(format!("Work on {label}, which is connected"))
+                    .on_press(move |s: &mut State| crate::remote::peers::focus(s, &key))
+                    .build(k)
+                    .key(format!("failed-use-{label}"))
+            }))
             .children(remote.then(|| {
                 // A paired computer that does not answer must not strand
                 // the app: back to this Mac's own gateway.

@@ -150,6 +150,12 @@ impl Peers {
 
     /// Ask Rune for a wake at `at` only if no earlier or equal deadline has
     /// already been requested.
+    /// The wake last asked for never reached Rune (a throwaway `Tx`): the
+    /// next poll asks again.
+    pub(super) fn forget_wake(&mut self) {
+        self.wake_asked = None;
+    }
+
     pub(super) fn request_wake(&mut self, at: Instant, now: Instant, tx: &mut Tx) {
         if self.wake_asked.is_none_or(|prev| at < prev) {
             self.wake_asked = Some(at);
@@ -423,6 +429,15 @@ pub fn poll(s: &mut State, tx: &mut Tx) -> bool {
         Some(_) => {}
     }
     changed
+}
+
+/// Prompts sent on `key` just before it lost the focus on a cold switch
+/// (a warm handover carries them itself): its peer polls on the sent
+/// cadence until the backend lists their runs.
+pub(crate) fn carry_sent(s: &mut State, key: &str, sent: BTreeMap<String, Sent>) {
+    if let Some(peer) = s.remote.peers.get_mut(key) {
+        peer.sent.extend(sent);
+    }
 }
 
 /// Peers in registry order.

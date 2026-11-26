@@ -2,6 +2,11 @@
 //! draft across computer switches, applying the "New threads start on"
 //! preference, and offering "Run on <label>" when computer use is unavailable
 //! on the focused backend.
+//!
+//! A draft moves only to a computer that is already connected, in one
+//! UI-thread step (a warm handover): there is no window in which the person
+//! can edit a draft that is "on its way". Nothing is merged or deleted: when
+//! the destination already holds an unsent draft, the two swap places.
 
 use std::ops::Range;
 
@@ -27,9 +32,6 @@ pub(crate) struct CarriedDraft {
     source: String,
     /// Intended destination computer key.
     target: String,
-    /// For async cold switches, the `connect_gen` of that switch attempt so a
-    /// superseding switch cannot consume this carry.
-    connect_gen: Option<crate::jobs::Generation>,
     profile: String,
     text: String,
     caret: usize,
@@ -117,6 +119,8 @@ pub(super) fn control(s: &State, k: &Kit, layer: &mut Vec<El>) -> Option<El> {
             MenuItem::new(item_label)
                 .icon(&icons::MONITOR)
                 .checked(is_focused)
+                // Only a connected computer can take the draft.
+                .disabled(!is_focused && !choice.ready)
                 .on_select(move |s: &mut State| pick(s, key.clone())),
         );
     }
@@ -124,14 +128,19 @@ pub(super) fn control(s: &State, k: &Kit, layer: &mut Vec<El>) -> Option<El> {
     Some(menu.build(k, layer))
 }
 
-/// Move the open draft to `key`, preserving text, caret, pills, staged files
-/// and (when offered by the target computer) profile and model pick.
+/// Move the open draft to `key`, a connected computer, keeping its text,
+/// caret, pills, staged files and (when that computer offers them) profile
+/// and model pick. One step: the handover lands before this returns. A
+/// computer that is not connected is not a destination (its menu item is
+/// disabled); the draft stays where it is, untouched.
 pub(crate) fn pick(s: &mut State, key: String) {
     if let Some(d) = s.workspace.draft.as_mut() {
         d.runs_on_open = false;
     }
     let source = s.onboarding.computer.key();
-    if source == key {
+    let ready = matches!(s.conn, crate::state::Conn::Ready)
+        && peers::get(s, &key).is_some_and(|p| p.conn == PeerConn::Ready);
+    if source == key || !ready {
         return;
     }
     if !crate::workspace::triage::is_triage_draft(s)
@@ -140,7 +149,6 @@ pub(crate) fn pick(s: &mut State, key: String) {
         s.workspace.carried_draft = Some(CarriedDraft {
             source,
             target: key.clone(),
-            connect_gen: None,
             profile: d.profile.clone(),
             text: d.input.text.clone(),
             caret: d.input.range().1,
@@ -153,18 +161,9 @@ pub(crate) fn pick(s: &mut State, key: String) {
         });
     }
     peers::focus(s, &key);
-    // For a synchronous handover, `connected` already consumed the carry.
-    // For an async cold switch, bind it to this switch's `connect_gen` so a
-    // superseding switch cannot consume it; if no switch started, drop it.
-    if let Some(carried) = s.workspace.carried_draft.as_mut()
-        && carried.target == key
-    {
-        if s.remote.switching.is_some() {
-            carried.connect_gen = Some(s.workspace.connect_gen);
-        } else {
-            s.workspace.carried_draft = None;
-        }
-    }
+    // `connected` consumed the carry when the handover landed. Anything
+    // left means it did not (fixtures): the draft is still on its screen.
+    s.workspace.carried_draft = None;
 }
 
 /// Check the "New threads start on" preference when opening a fresh draft.
@@ -173,7 +172,7 @@ pub(crate) fn pick(s: &mut State, key: String) {
 /// is unavailable.
 pub(super) fn apply_default_on_open(s: &mut State) -> DefaultOutcome {
     if s.workspace.carried_draft.is_some()
-        || s.remote.pending_thread.is_some()
+        || s.remote.pending_thread.as_ref().is_some_and(|p| p.live(s))
         || crate::workspace::triage::is_triage_draft(s)
     {
         return DefaultOutcome::Stay(None);
@@ -190,7 +189,6 @@ pub(super) fn apply_default_on_open(s: &mut State) -> DefaultOutcome {
             s.workspace.carried_draft = Some(CarriedDraft {
                 source: s.onboarding.computer.key(),
                 target: target_key.clone(),
-                connect_gen: None,
                 profile: DEFAULT_PROFILE_ID.into(),
                 text: String::new(),
                 caret: 0,
@@ -234,20 +232,16 @@ pub(crate) fn connected(s: &mut State) -> bool {
     let Some(carried) = s.workspace.carried_draft.take() else {
         return false;
     };
-    // Only consume the carry when focus landed on its intended destination for
-    // its own switch attempt. A superseding switch discards the stale carry
-    // while leaving the source computer's saved draft intact on disk.
-    if carried.target != s.onboarding.computer.key()
-        || carried
-            .connect_gen
-            .is_some_and(|g| g != s.workspace.connect_gen)
-    {
+    // Only on its own destination; anything else drops the carry and leaves
+    // the source computer's saved draft as it was.
+    if carried.target != s.onboarding.computer.key() {
         return false;
     }
     if carried.from_new_draft {
         super::open(s);
         return true;
     }
+    // What this computer had waiting, unsent.
     let existing = crate::drafts::restore(s, crate::drafts::NEW_THREAD);
     let carried_empty =
         carried.text.trim().is_empty() && carried.pills.is_empty() && carried.staged.is_empty();
@@ -272,45 +266,25 @@ pub(crate) fn connected(s: &mut State) -> bool {
             .or_else(|| list.profiles.first().map(|p| p.profile_id.clone()))
             .unwrap_or_else(|| DEFAULT_PROFILE_ID.into())
     };
-    let (merged_text, merged_pills, merged_staged, caret) = match existing {
+    // An empty carry shows what was waiting here. Otherwise the carried
+    // draft takes this screen and the one that was waiting goes to the
+    // source computer's slot (a swap): neither is merged, neither is lost.
+    let (text, pills, staged, caret, displaced) = match existing {
         Some(saved) if carried_empty => {
             let pills: Vec<_> = saved.tokens.into_iter().map(|t| (t.range, t.id)).collect();
             let caret = saved.text.len();
-            (saved.text, pills, saved.files, caret)
+            (saved.text, pills, saved.files, caret, None)
         }
-        Some(saved) => {
-            // Preserve the destination's existing unsent draft at the top and
-            // append the carried draft below it so nothing is ever lost.
-            let mut text = saved.text;
-            let mut pills: Vec<_> = saved.tokens.into_iter().map(|t| (t.range, t.id)).collect();
-            let mut staged = saved.files;
-            let offset = if text.is_empty() {
-                0
-            } else {
-                text.push_str("\n\n");
-                text.len()
-            };
-            text.push_str(&carried.text);
-            pills.extend(
-                carried
-                    .pills
-                    .into_iter()
-                    .map(|(r, id)| ((r.start + offset)..(r.end + offset), id)),
-            );
-            staged.extend(carried.staged);
-            let caret = (offset + carried.caret).min(text.len());
-            (text, pills, staged, caret)
-        }
-        None => {
+        waiting => {
             let caret = carried.caret.min(carried.text.len());
-            (carried.text, carried.pills, carried.staged, caret)
+            (carried.text, carried.pills, carried.staged, caret, waiting)
         }
     };
     let mut draft = empty_draft(&profile);
-    draft.staged = merged_staged;
+    draft.staged = staged;
     draft.worktree = carried.worktree;
     draft.fresh = false;
-    inline_files::set_content(&mut draft.input, &merged_text, &merged_pills);
+    inline_files::set_content(&mut draft.input, &text, &pills);
     draft.input.set_caret(caret.min(draft.input.text.len()));
     draft.input.focused = true;
     let generation = s.workspace.draft_opens.bump();
@@ -321,13 +295,91 @@ pub(crate) fn connected(s: &mut State) -> bool {
     let catalog = catalog_thread(s);
     crate::chat::model_picker::draft_carry_pick(s, carried.model_pick, carried.effort);
     crate::chat::model_picker::draft_set_profile(s, profile, catalog);
+    // This computer's slot now holds what is on screen.
     record(s);
-    // Retire the source computer's saved copy only after the move has landed on
-    // the destination, so switching back cannot resurrect a duplicate draft.
     if carried.source != carried.target {
-        crate::drafts::remove_for(s, &carried.source, crate::drafts::NEW_THREAD);
+        // The source's slot: the draft that was waiting here, else nothing
+        // (the moved draft lives here now, so going back cannot bring a
+        // second copy of it).
+        match displaced {
+            Some(waiting) => {
+                crate::drafts::record_for(s, &carried.source, crate::drafts::NEW_THREAD, waiting)
+            }
+            None => crate::drafts::remove_for(s, &carried.source, crate::drafts::NEW_THREAD),
+        }
     }
+    restage_for_remote(s);
     true
+}
+
+/// Files staged by path can only be opened by this Mac's backend. A draft
+/// that just moved to another computer reads them now (within that
+/// computer's limits), as attaching them there would have; each keeps its
+/// key, so its card in the text still points at it. One that cannot be read
+/// stays as it was, and the draft says why (a send refuses it by name).
+fn restage_for_remote(s: &mut State) {
+    use zlo_client::attachments::{self, Backend, Body};
+    if !crate::remote::backend_is_remote(s) {
+        return;
+    }
+    let (Some(session), Some(draft)) = (s.session.as_ref(), s.workspace.draft.as_ref()) else {
+        return;
+    };
+    let paths: Vec<(u64, std::path::PathBuf)> = draft
+        .staged
+        .iter()
+        .filter_map(|f| match &f.body {
+            Body::Path(path) => Some((f.key, path.clone())),
+            Body::Bytes(_) => None,
+        })
+        .collect();
+    if paths.is_empty() {
+        return;
+    }
+    let limits = session.attachments.clone();
+    let generation = draft.generation;
+    crate::jobs::run(
+        s,
+        "restage attachments",
+        move |_| async move {
+            let mut out = Vec::new();
+            for (key, path) in paths {
+                out.push((
+                    key,
+                    attachments::stage(&path, &limits, Backend::Remote).await,
+                ));
+            }
+            Ok(out)
+        },
+        move |s, result, _| {
+            let Ok(results) = result else { return };
+            let Some(draft) = s
+                .workspace
+                .draft
+                .as_mut()
+                .filter(|d| d.generation == generation)
+            else {
+                return;
+            };
+            let mut problems = Vec::new();
+            for (key, staged) in results {
+                match staged {
+                    Ok(read) => {
+                        if let Some(file) = draft.staged.iter_mut().find(|f| f.key == key) {
+                            file.body = read.body;
+                            file.size = read.size;
+                            file.mime_type = read.mime_type;
+                        }
+                    }
+                    Err(problem) => problems.push(problem),
+                }
+            }
+            if !problems.is_empty() {
+                draft.error = Some(problems.join(" "));
+            }
+            record(s);
+        },
+    );
 }
 
 /// When the focused backend is known to lack computer use and another ready

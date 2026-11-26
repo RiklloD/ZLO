@@ -69,16 +69,19 @@ pub(super) fn connect_peer(s: &mut State, key: &str) {
                     .get(&key_owned)
                     .is_some_and(|p| p.generation == generation)
             {
-                let had_tunnel = resolved.as_ref().is_ok_and(|r| r.tunnel.is_some());
+                // Superseded: whatever it opened (a tunnel, also one a failed
+                // resolve dropped) has no adopter.
                 drop(resolved);
-                if had_tunnel {
-                    crate::remote::retain_tunnels(s);
-                }
+                crate::remote::retain_tunnels(s);
                 return false;
             }
             match resolved {
                 Ok(r) => open_peer(s, &key_owned, generation, r, tx),
-                Err(p) => peer_failed(s, &key_owned, p, tx),
+                Err(p) => {
+                    peer_failed(s, &key_owned, p, tx);
+                    // A tunnel the failed attempt opened has no adopter.
+                    crate::remote::retain_tunnels(s);
+                }
             }
             true
         });
@@ -207,6 +210,7 @@ fn open_peer(s: &mut State, key: &str, generation: Generation, r: Resolved, tx: 
 }
 
 fn peer_failed(s: &mut State, key: &str, problem: Problem, tx: &mut Tx) {
+    crate::pages::notifications::peer_connection_ended(s, key);
     let is_asleep = crate::remote::asleep(s, key);
     let can_wake = s.workspace.window_active && !crate::design::look::saving(s);
     let now = Instant::now();
@@ -308,6 +312,7 @@ pub(super) fn refresh_peer(s: &mut State, key: &str) {
                 Ok((inbox, notifications)) => {
                     prune_sent(&mut peer.sent, &inbox);
                     peer.inbox = Some(inbox);
+                    let listed = notifications.is_some();
                     if let Some((notifications, unread_count)) = notifications {
                         peer.notifications = notifications;
                         peer.unread_count = unread_count;
@@ -326,7 +331,11 @@ pub(super) fn refresh_peer(s: &mut State, key: &str) {
                     if let Some(at) = wake_at {
                         s.remote.peers.request_wake(at, now, tx);
                     }
-                    crate::workspace::peer_notifications_landed(s, &key_owned);
+                    // Only a notifications listing that landed says what
+                    // the gateway holds; without one the marks stay.
+                    if listed {
+                        crate::workspace::peer_notifications_landed(s, &key_owned);
+                    }
                 }
                 Err(e) if e.is_unauthorized() || matches!(e, ClientError::Network(_)) => {
                     let problem = connect::problem_of(&peer.computer, &e);

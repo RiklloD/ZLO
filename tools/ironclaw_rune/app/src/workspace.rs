@@ -332,10 +332,13 @@ pub(crate) fn connected(
     // An explicit `(computer, thread)` intent (`peers::focus_thread`) takes
     // precedence over the draft default computer and `last_thread`, and opens
     // the thread even when it is absent from the inbox list.
+    // Every landing ends it: a stale one (another computer, an older
+    // attempt) is dropped here and can never fire later.
     if let Some(pending) = s
         .remote
         .pending_thread
-        .take_if(|p| p.computer == s.onboarding.computer.key())
+        .take()
+        .filter(|p| p.computer == s.onboarding.computer.key() && p.live(s))
     {
         s.workspace.carried_draft = None;
         open_thread(s, pending.thread_id);
@@ -578,6 +581,9 @@ fn friendly_unreachable(message: &str, runs_local: bool) -> String {
 
 /// Open a thread in the main column. Other areas call this.
 pub fn open_thread(s: &mut State, thread_id: String) {
+    // A newer navigation: a thread click still waiting on a switch no
+    // longer decides what opens when that switch lands.
+    s.remote.pending_thread = None;
     // A docked composer is in the tree (shown, or kept under a settings page).
     let docked = s.chat.is_some() && s.page != Page::Draft;
     s.page = Page::Chat;

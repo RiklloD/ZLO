@@ -391,7 +391,22 @@ pub(crate) fn paired(s: &mut State, result: Result<Paired, PairError>) {
 /// its Paired devices).
 pub fn remove(s: &mut State, environment_id: String) {
     s.remote.page.confirm_remove = None;
-    let was_active = s.remote.registry.active == Active::Environment(environment_id.clone());
+    let removed = Active::Environment(environment_id.clone());
+    let was_active = s.remote.registry.active == removed;
+    // A switch to or from it ends here: its late answer must not install
+    // (or roll back to) a computer that is no longer saved.
+    if was_active
+        || s.remote
+            .switching
+            .as_ref()
+            .is_some_and(|sw| sw.target == removed)
+    {
+        s.workspace.connect_gen.bump();
+        s.remote.page.pending_backend = None;
+        s.remote.switching = None;
+        s.remote.pending_thread = None;
+        s.workspace.carried_draft = None;
+    }
     let removed_routes = s
         .remote
         .registry
@@ -446,7 +461,23 @@ pub fn remove(s: &mut State, environment_id: String) {
         );
     }
     if was_active {
-        super::switch_to(s, Active::ThisMac);
+        // The saved pick never names the removed entry, whatever happens
+        // next: This Mac, by its warm connection when it has one.
+        s.remote.registry.active = Active::ThisMac;
+        s.remote.legacy_active = false;
+        if let Err(e) = super::save_registry(s) {
+            s.remote.page.error = Some(e);
+        }
+        let this_mac = zlo_client::environments::THIS_MAC;
+        let warm =
+            super::peers::get(s, this_mac).is_some_and(|p| p.conn == super::peers::PeerConn::Ready);
+        if warm && matches!(s.conn, crate::state::Conn::Ready) {
+            super::peers::focus(s, this_mac);
+        } else {
+            s.workspace.connect_attempt = 0;
+            s.launched = std::time::Instant::now();
+            super::connect(s);
+        }
     } else {
         if let Err(e) = super::save_registry(s) {
             s.remote.page.error = Some(e);
@@ -468,16 +499,30 @@ pub fn set_run_local(s: &mut State, on: bool) {
     } else {
         false
     };
-    if !on && stopped_managed && !super::backend_is_remote(s) && !super::env_override() {
-        // The managed process was stopped: drop its dead client and leave
-        // `Conn::Ready` so turning the switch back on reconnects cleanly.
+    let focused_local = !super::backend_is_remote(s) && !super::env_override();
+    let ready_peer = super::peers::list(s)
+        .into_iter()
+        .find(|p| p.conn == super::peers::PeerConn::Ready)
+        .map(|p| p.computer.key());
+    if !on
+        && stopped_managed
+        && focused_local
+        && matches!(s.conn, crate::state::Conn::Ready)
+        && let Some(key) = ready_peer
+    {
+        // Its backend is gone, and another computer is connected: work
+        // goes on there (a warm handover), never on a dead client.
+        super::peers::focus(s, &key);
+    } else if !on && stopped_managed && focused_local {
+        // The managed process was stopped and nothing else is connected:
+        // drop its dead client; the failed screen offers turning it back on.
         s.workspace.connect_gen.bump();
         s.remote.page.pending_backend = None;
         s.rt.backend = None;
         s.remote.tag = super::ConnTag::default();
         s.conn = crate::state::Conn::Failed {
-            message: "\"Run IronClaw on this Mac\" is off in Settings → Computers. \
-                      Turn it back on, start `zlo serve` yourself, or pick another computer."
+            message: "\"Run IronClaw on this Mac\" is off. Turn it back on here, \
+                      or start `zlo serve` yourself and try again."
                 .into(),
             retry_in: None,
         };

@@ -123,7 +123,10 @@ One UI-thread step, no network:
 4. `peers::sync` runs. The peer's last thread reopens as a switch does today.
 
 A handover while a switch or connect is in flight cancels that attempt
-(bump `connect_gen`). If the focused connection later fails and a peer is
+(bump `connect_gen`). A thread to open on another computer travels as one
+intent bound to the attempt that carries it (`PendingThread`): any landing
+consumes or drops it, and a failure, a newer attempt or a newer navigation
+ends it. If the focused connection later fails and a peer is
 ready, the failed screen still offers what it offers now; do not auto-switch.
 
 ### Tests (unit, over `jobs::harness` and `test_gateway`)
@@ -163,10 +166,14 @@ ready, the failed screen still offers what it offers now; do not auto-switch.
 
 - The new-thread screen shows a "Runs on" control in the composer's action
   row, next to the worktree control and in its style: the focused
-  computer's label; its menu lists `peers::usable`. Picking one moves the
-  focus (`peers::focus`) and keeps the draft's text and staged files. The
-  profile and model fall back to that computer's defaults when it does not
-  have the chosen ones. Hidden with one computer.
+  computer's label; its menu lists `peers::usable`. Picking a connected
+  computer moves the focus (a warm handover, one step) and keeps the
+  draft's text and staged files; one that is not connected is disabled, so
+  a draft is never "on its way". When the destination already holds an
+  unsent draft the two swap places (nothing is merged or deleted). Files
+  staged by path are read for a remote destination. The profile and model
+  fall back to that computer's defaults when it does not have the chosen
+  ones. Hidden with one computer.
 - A preference "New threads start on" (Settings → Computers; values: the
   computer last used, or one named computer), saved with the other prefs.
   Opening a new draft moves the focus there when that computer is ready;

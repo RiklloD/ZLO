@@ -798,3 +798,6 @@ fn p3_j_handover_from_failed_screen_asks_for_crossfade_motion() {
         "handover leaving a Failed screen must ask for crossfade motion on a live Tx"
     );
 }
+
+#[path = "peers_review2_tests.rs"]
+mod round2;

@@ -147,6 +147,16 @@ pub(crate) fn peer_list_landed(s: &mut State, computer: &str) {
         .retain(|change, p| !(change.computer() == computer && p.confirmed));
 }
 
+/// A peer's connection ended (it failed, slept or was replaced): replies to
+/// changes asked on it may never land, so its optimistic marks go. The next
+/// listing shows what its gateway really holds.
+pub(crate) fn peer_connection_ended(s: &mut State, computer: &str) {
+    s.pages
+        .notifications
+        .peer_pending
+        .retain(|change, _| change.computer() != computer);
+}
+
 /// The page became visible: load on first visit, refresh after.
 pub fn opened(s: &mut State) {
     refresh(s);

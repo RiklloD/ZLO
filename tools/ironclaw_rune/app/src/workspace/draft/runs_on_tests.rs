@@ -497,18 +497,16 @@ fn notifications_page_lists_peer_items_tagged_and_opening_focuses_peer() {
         rt.state.remote.registry.active,
         Active::Environment("studio".into())
     );
-    assert_eq!(
-        rt.state
-            .remote
-            .last_thread
-            .get("studio")
-            .map(String::as_str),
-        Some("t-studio")
-    );
+    // A fixture peer has no warm connection: the click rides on the switch
+    // it started, as an intent bound to that attempt.
+    let pending = rt.state.remote.pending_thread.as_ref().expect("intent");
+    assert_eq!(pending.computer, "studio");
+    assert_eq!(pending.thread_id, "t-studio");
+    assert!(pending.live(&rt.state));
 }
 
 #[test]
-fn picking_a_computer_preserves_destinations_saved_draft_and_retires_source() {
+fn picking_a_computer_swaps_with_the_destinations_saved_draft() {
     let (mut s, _pump, _mac_gw, _studio_gw) = two_gateways(&[("default", "Default")], vec![]);
 
     // Leave an unsent new-thread draft saved on studio.
@@ -534,30 +532,60 @@ fn picking_a_computer_preserves_destinations_saved_draft_and_retires_source() {
     }
     crate::workspace::draft::record(&mut s);
 
-    // Pick studio in "Runs on": studio's existing draft must not be destroyed.
+    // Pick studio in "Runs on": the carried draft takes the screen there,
+    // unmerged, and studio's waiting draft is neither destroyed nor mixed in.
     pick(&mut s, "studio".into());
 
     assert_eq!(s.onboarding.computer.key(), "studio");
     assert_eq!(s.page, Page::Draft);
     let d = s.workspace.draft.as_ref().expect("draft open on studio");
-    assert!(
-        d.input.text.contains("Studio existing draft"),
-        "destination's saved draft must be preserved: {:?}",
-        d.input.text
-    );
-    assert!(
-        d.input.text.contains("Mac carried draft"),
-        "carried draft must be present: {:?}",
-        d.input.text
-    );
+    assert_eq!(d.input.text, "Mac carried draft");
     assert_eq!(d.staged.len(), 1);
     assert_eq!(d.staged[0].filename, "NOTE.md");
+    assert_eq!(
+        crate::drafts::restore(&s, crate::drafts::NEW_THREAD)
+            .map(|d| d.text)
+            .as_deref(),
+        Some("Mac carried draft"),
+        "studio's slot holds what is on screen"
+    );
 
-    // Moving back to mac must NOT resurrect mac's retired draft.
+    // The two swapped: mac's slot holds studio's waiting draft, and never a
+    // second copy of the one that moved.
     peers::focus(&mut s, "mac");
-    assert!(
-        !crate::drafts::has(&s, crate::drafts::NEW_THREAD),
-        "source computer's saved draft must be retired after move lands"
+    assert_eq!(
+        crate::drafts::restore(&s, crate::drafts::NEW_THREAD)
+            .map(|d| d.text)
+            .as_deref(),
+        Some("Studio existing draft")
+    );
+}
+
+/// A computer that is not connected is no destination: the pick does
+/// nothing, starts no switch, and the draft stays on its screen and disk.
+#[test]
+fn picking_a_computer_that_is_not_connected_moves_nothing() {
+    let (mut s, _pump, _mac_gw, _studio_gw) = two_gateways(&[("default", "Default")], vec![]);
+    s.remote.peers.insert_fixture(Peer::fixture(
+        Computer::remote("mini", "Mac mini"),
+        PeerConn::Asleep,
+    ));
+    crate::workspace::draft::open(&mut s);
+    if let Some(d) = s.workspace.draft.as_mut() {
+        d.input.replace_text("Keep me on mac");
+    }
+    crate::workspace::draft::record(&mut s);
+    let attempt = s.workspace.connect_gen;
+
+    pick(&mut s, "mini".into());
+
+    assert_eq!(s.onboarding.computer.key(), "mac");
+    assert_eq!(s.workspace.connect_gen, attempt, "no switch started");
+    assert!(s.remote.switching.is_none());
+    assert!(s.workspace.carried_draft.is_none());
+    assert_eq!(
+        s.workspace.draft.as_ref().map(|d| d.input.text.as_str()),
+        Some("Keep me on mac")
     );
 }
 
@@ -865,4 +893,45 @@ fn clicking_peer_notification_with_live_gateways_opens_thread_and_marks_read_on_
         "mac gateway must not receive studio's mark-read: {:?}",
         mac_gw.paths()
     );
+}
+
+/// A file staged by its path on the source is read for the destination
+/// when the draft moves to another computer, keeping its key (its card in
+/// the text still points at it), so the send there does not refuse it.
+#[test]
+fn a_moved_drafts_local_file_is_read_for_the_other_computer() {
+    let (mut s, mut pump, _mac_gw, _studio_gw) = two_gateways(&[("default", "Default")], vec![]);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("NOTE.md");
+    std::fs::write(&path, b"hello").expect("write");
+
+    crate::workspace::draft::open(&mut s);
+    if let Some(d) = s.workspace.draft.as_mut() {
+        d.input.replace_text("Read this");
+        d.staged.push(StagedFile {
+            key: 77,
+            filename: "NOTE.md".into(),
+            mime_type: "text/markdown".into(),
+            size: 5,
+            body: Body::Path(path.clone()),
+        });
+    }
+    crate::workspace::draft::record(&mut s);
+
+    pick(&mut s, "studio".into());
+    assert_eq!(s.onboarding.computer.key(), "studio");
+
+    assert!(
+        pump.until(&mut s, Duration::from_secs(5), |s| {
+            s.workspace.draft.as_ref().is_some_and(|d| {
+                d.staged
+                    .iter()
+                    .any(|f| f.key == 77 && f.bytes() == Some(b"hello".as_slice()))
+            })
+        }),
+        "the file was read for studio, under its own key"
+    );
+    let d = s.workspace.draft.as_ref().expect("draft");
+    assert!(crate::remote::check_outgoing(&s, &d.staged).is_ok());
+    assert_eq!(d.input.text, "Read this");
 }

@@ -116,6 +116,18 @@ pub struct RemoteState {
 pub struct PendingThread {
     pub computer: String,
     pub thread_id: String,
+    /// The connect attempt (`workspace.connect_gen`) this intent rides on;
+    /// `None` for a warm handover, which lands in the same step. A newer
+    /// attempt makes it stale.
+    pub attempt: Option<crate::jobs::Generation>,
+}
+
+impl PendingThread {
+    /// Still the navigation in flight: a newer connect attempt has not
+    /// replaced the one it was asked with.
+    pub fn live(&self, s: &State) -> bool {
+        self.attempt.is_none_or(|g| g == s.workspace.connect_gen)
+    }
 }
 
 #[derive(Clone, Debug)]

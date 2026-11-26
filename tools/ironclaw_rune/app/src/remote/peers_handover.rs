@@ -13,74 +13,102 @@ use crate::state::{Conn, State};
 
 /// Move the focus to `key`. Ready peer: instant handover on the UI thread
 /// with no network requests. Otherwise the existing `connect::switch_to`.
-/// When leaving a Failed/Connecting screen without a `Tx`, defers handover
-/// through `Rt::deliver` so `workspace::connected`'s crossfade runs on a live
-/// `Tx`.
+/// When leaving a Failed/Connecting screen, the handover is deferred through
+/// `Rt::deliver` so `workspace::connected`'s crossfade runs on a live `Tx`.
 pub fn focus(s: &mut State, key: &str) {
     s.remote.pending_thread = None;
     if is_ready_focused(s, key) {
         return;
     }
-    if can_handover(s, key) {
-        if !matches!(s.conn, Conn::Ready) {
-            let key_owned = key.to_string();
-            s.rt.deliver(move |s, tx| {
-                focus_with_tx(s, &key_owned, tx);
-                true
-            });
-            return;
-        }
-        let mut tx = Tx::default();
-        handover(s, key, &mut tx);
+    if !can_handover(s, key) {
+        connect::switch_to(s, active_of_key(key));
         return;
     }
-    connect::switch_to(s, active_of_key(key));
+    if matches!(s.conn, Conn::Ready) {
+        warm(s, key, None);
+        return;
+    }
+    // Deferred: a navigation or connect attempt started meanwhile wins.
+    let (key, asked) = (key.to_string(), s.workspace.connect_gen);
+    s.rt.deliver(move |s, tx| {
+        if s.workspace.connect_gen != asked {
+            return false;
+        }
+        if can_handover(s, &key) {
+            handover(s, &key, tx);
+        } else if !is_ready_focused(s, &key) {
+            connect::switch_to(s, active_of_key(&key));
+        }
+        true
+    });
 }
 
-/// [`focus`] when the caller already holds a live `Tx`.
-fn focus_with_tx(s: &mut State, key: &str, tx: &mut Tx) {
+/// Focus `key`, then open `thread_id` once the focus has landed (in the
+/// same step on a handover or when `key` is already focused). The intent is
+/// bound to the connect attempt it starts: a failure or a newer attempt
+/// drops it (`PendingThread::live`).
+pub fn focus_thread(s: &mut State, key: &str, thread_id: String) {
     s.remote.pending_thread = None;
     if is_ready_focused(s, key) {
-        return;
-    }
-    if can_handover(s, key) {
-        handover(s, key, tx);
-        return;
-    }
-    connect::switch_to(s, active_of_key(key));
-}
-
-/// Focus `key`, then open `thread_id` once the focus has landed (immediately
-/// on a handover or if `key` is already focused).
-pub fn focus_thread(s: &mut State, key: &str, thread_id: String) {
-    if is_ready_focused(s, key) {
-        s.remote.pending_thread = None;
         crate::workspace::open_thread(s, thread_id);
         return;
     }
-    s.remote.pending_thread = Some(PendingThread {
-        computer: key.to_string(),
-        thread_id: thread_id.clone(),
-    });
-    s.remote.last_thread.insert(key.to_string(), thread_id);
-    if can_handover(s, key) {
-        if !matches!(s.conn, Conn::Ready) {
-            let key_owned = key.to_string();
-            s.rt.deliver(move |s, tx| {
-                if can_handover(s, &key_owned) {
-                    handover(s, &key_owned, tx);
-                } else if !is_ready_focused(s, &key_owned) {
-                    connect::switch_to(s, active_of_key(&key_owned));
-                }
-                true
-            });
-            return;
-        }
-        let mut tx = Tx::default();
-        handover(s, key, &mut tx);
+    if !can_handover(s, key) {
+        cold_thread(s, key, thread_id);
         return;
     }
+    if matches!(s.conn, Conn::Ready) {
+        warm(s, key, Some(thread_id));
+        return;
+    }
+    let (key, asked) = (key.to_string(), s.workspace.connect_gen);
+    s.rt.deliver(move |s, tx| {
+        if s.workspace.connect_gen != asked {
+            return false;
+        }
+        if can_handover(s, &key) {
+            s.remote.pending_thread = Some(PendingThread {
+                computer: key.clone(),
+                thread_id,
+                attempt: None,
+            });
+            handover(s, &key, tx);
+            s.remote.pending_thread = None;
+        } else if is_ready_focused(s, &key) {
+            crate::workspace::open_thread(s, thread_id);
+        } else {
+            cold_thread(s, &key, thread_id);
+        }
+        true
+    });
+}
+
+/// A cold switch carrying a thread to open: the intent rides on the attempt
+/// the switch starts, and is not set when the switch ended at once.
+fn cold_thread(s: &mut State, key: &str, thread_id: String) {
     connect::switch_to(s, active_of_key(key));
+    if s.remote.switching.is_some() || !matches!(s.conn, Conn::Ready) {
+        s.remote.pending_thread = Some(PendingThread {
+            computer: key.to_string(),
+            thread_id,
+            attempt: Some(s.workspace.connect_gen),
+        });
+    }
+}
+
+/// A handover from a working screen, in this step. It has no live `Tx`
+/// (callers are plain handlers), so the wake its demoted peer asked for
+/// went nowhere: forget it, and the next poll asks again.
+fn warm(s: &mut State, key: &str, thread_id: Option<String>) {
+    s.remote.pending_thread = thread_id.map(|thread_id| PendingThread {
+        computer: key.to_string(),
+        thread_id,
+        attempt: None,
+    });
+    let mut tx = Tx::default();
+    handover(s, key, &mut tx);
+    s.remote.pending_thread = None;
+    s.remote.peers.forget_wake();
 }
 
 fn is_ready_focused(s: &State, key: &str) -> bool {
@@ -186,6 +214,8 @@ fn handover(s: &mut State, key: &str, tx: &mut Tx) {
     if !peer_sent.is_empty() {
         prune_sent(&mut peer_sent, &s.workspace.inbox.list);
         s.workspace.inbox.sent.extend(peer_sent);
+        // `inbox::apply` armed its poll before these were back.
+        crate::workspace::inbox::sent_restored(s);
     }
     // 4. Refresh a demoted computer immediately when it has unconfirmed sent work.
     if let Some(demoted_key) = demoted_sent_key {
