@@ -1164,9 +1164,12 @@ fn remote_landed(
     remote_repo::note(x, false, Ok(()));
     remote_repo::adopt_root(x, &loaded.status.repo_root);
     x.remote_repo.checkpoint = loaded.status.checkpoint;
+    let branch = remote_repo::branch(loaded.status.branch);
+    // The composer's place line shows the live branch, as for a local repo.
+    x.head = Some(branch.name.clone());
     let state = &mut x.changes;
     state.loaded = true;
-    state.branch = remote_repo::branch(loaded.status.branch);
+    state.branch = branch;
     state.changes = loaded
         .status
         .changes

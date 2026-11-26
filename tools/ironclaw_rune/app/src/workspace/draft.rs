@@ -866,10 +866,9 @@ fn place_bar(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
     let p = &s.palette;
     let profile = s.workspace.inbox.profile(&draft.profile);
     let branch = profile.and_then(|p| p.git_branch.clone());
-    let can_branch = branch.is_some() || s.prefs.last_project.is_some();
     let on = in_worktree(s, draft);
     let blocked = crate::chat::model_picker::draft_no_worktrees(&draft.picker);
-    let left = can_branch.then(|| {
+    let left = can_branch(s, draft).then(|| {
         let open = draft.worktree_open;
         let (glyph, label) = if on {
             (&icons::GIT_BRANCH_PLUS, "New worktree")
@@ -951,12 +950,15 @@ pub(super) fn set_worktree(s: &mut State, on: bool) {
 
 /// Whether `draft` starts its thread in a new worktree: as switched, else
 /// when the Worktrees setting is on and its profile's folder is a git
-/// checkout (the profile reports a branch); never on a model that cannot
-/// run in one.
+/// checkout (the profile reports a branch); never when there is no folder
+/// to branch from, nor on a model that cannot run in one. The new thread's
+/// own route has the last word (`submit::create`).
 pub(super) fn in_worktree(s: &State, draft: &DraftState) -> bool {
     // A model whose runtime cannot run there works Local, whatever the
     // switch says (the menu says why).
-    if crate::chat::model_picker::draft_no_worktrees(&draft.picker).is_some() {
+    if !can_branch(s, draft)
+        || crate::chat::model_picker::draft_no_worktrees(&draft.picker).is_some()
+    {
         return false;
     }
     draft.worktree.unwrap_or_else(|| {
@@ -966,6 +968,17 @@ pub(super) fn in_worktree(s: &State, draft: &DraftState) -> bool {
                 .profile(&draft.profile)
                 .is_some_and(|p| p.git_branch.is_some())
     })
+}
+
+/// A worktree could be made for `draft`: its profile's folder is a git
+/// checkout, or a project folder was used (a draft carried from another
+/// computer may land in a profile with neither).
+fn can_branch(s: &State, draft: &DraftState) -> bool {
+    s.prefs.last_project.is_some()
+        || s.workspace
+            .inbox
+            .profile(&draft.profile)
+            .is_some_and(|p| p.git_branch.is_some())
 }
 
 pub(super) fn empty_draft(profile: &str) -> DraftState {

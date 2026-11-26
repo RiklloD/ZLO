@@ -199,9 +199,10 @@ pub(super) fn submit(s: &mut State, sub: Submission, voice: Option<crate::voice:
 /// source: the profile's folder). Answers its id.
 ///
 /// A worktree the backend refuses (the model's runtime cannot run in one,
-/// the folder is not a git checkout) fails the send, and the thread made
-/// for it, still empty, is taken back: no blank thread is left in the
-/// sidebar, and the draft keeps its text to send again.
+/// the folder is not a git checkout) fails the send with a plain reason;
+/// the draft keeps its text to send again. The thread made for it stays:
+/// another client may already be using it, so it is never deleted here
+/// (the draft screen offers a worktree only where it can be made).
 async fn create(
     c: &zlo_client::Client,
     profile: &str,
@@ -225,13 +226,19 @@ async fn create(
         }
         (None, None) => {}
     }
-    // Made before the first message, so every turn runs there.
+    // Made before the first message, so every turn runs there; only on a
+    // runtime that can work there. The thread's own route decides, not the
+    // screen's pill, which may still show the previous profile's default.
+    let worktree = match worktree {
+        Some(_) if runtime_refuses_worktrees(c, &id).await => {
+            tracing::debug!("new thread's runtime cannot run in a worktree; it works Local");
+            None
+        }
+        other => other,
+    };
     if let Some(source) = worktree
         && let Err(e) = c.start_thread_worktree(&id, source.as_deref()).await
     {
-        if let Err(gone) = c.delete_thread(&id).await {
-            tracing::debug!(error = %gone, "empty thread not taken back");
-        }
         return Err(match e {
             ClientError::Refused { code, .. } if code == "worktree_unavailable" => {
                 ClientError::Refused {
@@ -245,6 +252,26 @@ async fn create(
         });
     }
     Ok(id)
+}
+
+/// The gateway says thread `id`'s runtime cannot run in a worktree. An
+/// unreadable route, or a gateway that does not say, is not a refusal: the
+/// worktree is asked for and the gateway answers.
+async fn runtime_refuses_worktrees(c: &zlo_client::Client, id: &str) -> bool {
+    match c.thread_route(id).await {
+        Ok(route) => {
+            route
+                .providers
+                .iter()
+                .find(|p| p.runtime == route.runtime)
+                .and_then(|p| p.worktrees)
+                == Some(false)
+        }
+        Err(e) => {
+            tracing::debug!(error = %e, "route unreadable before the worktree");
+            false
+        }
+    }
 }
 
 /// The draft once `sub`'s thread was created (`error` `None`) or failed.
@@ -361,6 +388,18 @@ mod tests {
             d.picker = Default::default();
         }
 
+        // A profile with no git folder and no project folder used (a draft
+        // carried from another computer can land there): nothing to branch
+        // from, so Local, whatever the switch says.
+        s.prefs.last_project = None;
+        s.workspace.draft = Some({
+            let mut d = empty_draft("default");
+            d.input.replace_text("hello");
+            d.worktree = Some(true);
+            d
+        });
+        assert_eq!(sent(&s).worktree, None, "nothing to branch from");
+
         s.prefs.last_project = Some("/Users/you/code/site".into());
         s.workspace.draft = Some({
             let mut d = empty_draft("default");
@@ -376,11 +415,11 @@ mod tests {
     }
 
     /// A worktree the backend refuses (the model's runtime cannot run in
-    /// one) fails the send with a plain reason, and the thread made for it
-    /// is deleted again, so no empty thread is left behind; a Local send
-    /// never asks for a worktree.
+    /// one) fails the send with a plain reason, and nothing is deleted (the
+    /// thread may already be in use elsewhere); a Local send never asks for
+    /// a worktree.
     #[test]
-    fn a_refused_worktree_takes_the_empty_thread_back() {
+    fn a_refused_worktree_says_why_and_deletes_nothing() {
         use crate::test_gateway::{Answer, Gateway};
         let gateway = Gateway::start(vec![Answer::ok("{}")]);
         gateway.route(
@@ -409,11 +448,7 @@ mod tests {
         assert!(message.starts_with("This model can't run in its own worktree"));
         assert!(!message.contains("t3_capabilities"), "{message}");
         assert_eq!(gateway.requests_to("/threads/t9/worktree"), 1);
-        assert_eq!(
-            gateway.requests_to("/threads/t9"),
-            1,
-            "the empty thread is deleted"
-        );
+        assert_eq!(gateway.requests_to("/threads/t9"), 0, "nothing is deleted");
 
         let local = rt.block_on(create(c, "work", None, None, None));
         assert_eq!(local.ok().as_deref(), Some("t9"));
@@ -422,7 +457,38 @@ mod tests {
             1,
             "Local asks none"
         );
-        assert_eq!(gateway.requests_to("/threads/t9"), 1, "and deletes nothing");
+        assert_eq!(gateway.requests_to("/threads/t9"), 0, "nor deleted");
+
+        // The new thread's own route decides: created on a runtime that
+        // cannot run in a worktree (the pill still showed another profile's
+        // default), it works Local and no worktree is asked for.
+        gateway.route(
+            "/threads/t9/route",
+            Answer::ok(
+                r#"{"threadId":"t9","runtime":"codex","provider":"codex","providers":[{"provider":"codex","name":"Codex","runtime":"codex","worktrees":false},{"provider":"claude-cli","name":"Claude CLI","runtime":"claude-cli","worktrees":true}]}"#,
+            ),
+        );
+        let switched = rt.block_on(create(c, "work", None, None, Some(None)));
+        assert_eq!(switched.ok().as_deref(), Some("t9"));
+        assert_eq!(
+            gateway.requests_to("/threads/t9/worktree"),
+            1,
+            "no worktree asked on Codex"
+        );
+        // On a runtime that can, it is asked for.
+        gateway.route(
+            "/threads/t9/route",
+            Answer::ok(
+                r#"{"threadId":"t9","runtime":"claude-cli","providers":[{"provider":"claude-cli","name":"Claude CLI","runtime":"claude-cli","worktrees":true}]}"#,
+            ),
+        );
+        gateway.route(
+            "/threads/t9/worktree",
+            Answer::ok(r#"{"path":"/wt/t9","branch":"zlo/t9","state":"active","exists":true}"#),
+        );
+        let made = rt.block_on(create(c, "work", None, None, Some(None)));
+        assert_eq!(made.ok().as_deref(), Some("t9"));
+        assert_eq!(gateway.requests_to("/threads/t9/worktree"), 2);
     }
 
     #[test]
