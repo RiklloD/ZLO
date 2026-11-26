@@ -3605,6 +3605,7 @@ dependencies = [
  "ironclaw_cli_providers",
  "ironclaw_common",
  "ironclaw_composition",
+ "ironclaw_config",
  "ironclaw_conversations",
  "ironclaw_event_log",
  "ironclaw_event_projections",

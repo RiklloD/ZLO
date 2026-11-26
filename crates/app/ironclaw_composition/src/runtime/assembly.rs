@@ -1985,6 +1985,10 @@ pub(super) async fn assemble_runtime(
         external_tool_catalog: services.external_tool_catalog.clone(),
         embedding_provider: services.embedding_provider.clone(),
         persistent_approval_policies: Arc::clone(&services.persistent_approval_policies),
+        system_prompt_paths: services
+            .standalone_storage_root
+            .clone()
+            .zip(services.default_system_prompt_path.clone()),
         tool_permission_overrides: services.tool_permission_overrides.clone(),
         auto_approve_settings: services.auto_approve_settings.clone(),
         extension_registry: services.extension_registry.clone(),

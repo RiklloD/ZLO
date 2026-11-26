@@ -497,7 +497,13 @@ observed_date = "2026-11-17"
 # `runtime/assembly.rs`, held in `runtime/handles.rs` and handed to
 # `orchestrate` in `product_surface.rs`. The bus, its turn-event sink and the
 # notification decorator live in `ironclaw_assistant::inbox_hints`.
-loc_ceiling = 34626
+# ✎ 2026-11-26 (configuration sync, phase 1): 34626 -> 34695, observed
+# 34776 -> 34845, zero hidden headroom. +69 lines of wiring only:
+# `config_sync_assembly.rs` hands each domain handler the store this host
+# already built (no logic: the handlers and the service are
+# `ironclaw_assistant::config_sync`), plus one runtime field carrying the
+# standalone `SYSTEM.md` path to it.
+loc_ceiling = 34695
 # Working slack for in-flight PRs. Deliberately small: the inflow this gate
 # exists to catch was +619 lines, and a tolerance that would have absorbed it
 # is a gate that constrains nothing. A change adding more than this to
@@ -632,7 +638,11 @@ loc_observed_date = "2026-11-25"
 # travels as one named handle, `ironclaw_skills::usage::SharedSkillUsage`
 # (also what the loop host, the CLI runtimes and the Skills product service
 # take), and the Skills product service left composition.
-arc_dyn_ceiling = 688
+# ✎ 2026-11-26 (configuration sync, phase 1): 688 -> 690, observed 703 ->
+# 705, zero hidden headroom. The two sites are `config_sync_assembly::wrap`
+# taking and returning the product surface it decorates, the same seam every
+# other surface decorator in `product_surface.rs` uses.
+arc_dyn_ceiling = 690
 arc_dyn_tolerance = 15
 # ✎ 2026-11-19: observed corrected 689 -> 699 (the measured count; the merge
 # entry above recorded 699 in its note but left this field at 689).

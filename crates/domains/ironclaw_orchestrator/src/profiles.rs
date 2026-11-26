@@ -393,6 +393,149 @@ impl Store {
             .await?
             .ok_or_else(|| OrchestratorError::Store("profile row vanished after write".into()))
     }
+
+    /// All profiles of `owner` (active and archived) in canonical `profile_id`
+    /// order, for configuration sync export. Ensures the default profile row
+    /// exists first.
+    pub async fn list_profiles_for_sync(
+        &self,
+        owner: &ProfileOwner,
+    ) -> Result<Vec<ProfileSyncRecord>> {
+        self.ensure_default_profile(owner).await?;
+        self.rows(
+            "SELECT profile_id, settings, created_at, updated_at, archived_at \
+             FROM orch_profiles \
+             WHERE tenant_id = ?1 AND user_id = ?2 \
+             ORDER BY profile_id ASC",
+            owner_params(owner),
+            profile_sync_row,
+        )
+        .await
+    }
+
+    /// Atomically upsert a batch of synced profiles for `owner` inside one
+    /// database transaction.
+    ///
+    /// Rules:
+    /// - Validates every incoming record before starting the transaction.
+    /// - Existing profiles whose `settings` and archived state already match
+    ///   are left untouched (`skipped_unchanged`).
+    /// - Conflicts are resolved with incoming (source) winning.
+    /// - Profiles that exist only on the target are preserved untouched.
+    /// - Archiving `default` is rejected.
+    pub async fn apply_profiles_sync(
+        &self,
+        owner: &ProfileOwner,
+        incoming: &[ProfileSyncRecord],
+    ) -> Result<ProfileSyncApplyCounts> {
+        let mut seen = std::collections::HashSet::with_capacity(incoming.len());
+        for item in incoming {
+            parse_profile_slug(item.profile_id.as_str())?;
+            if !seen.insert(item.profile_id.as_str()) {
+                return Err(OrchestratorError::invalid(format!(
+                    "duplicate profile_id '{}' in sync payload",
+                    item.profile_id
+                )));
+            }
+            if item.profile_id.as_str() == DEFAULT_PROFILE_ID && item.archived_at.is_some() {
+                return Err(OrchestratorError::request(
+                    "profile_protected",
+                    "The default profile cannot be archived.",
+                ));
+            }
+            validate_settings(&item.settings)?;
+        }
+
+        self.ensure_default_profile(owner).await?;
+        let existing_rows = self.list_profiles_for_sync(owner).await?;
+        let existing_by_id: std::collections::HashMap<&str, &ProfileSyncRecord> = existing_rows
+            .iter()
+            .map(|row| (row.profile_id.as_str(), row))
+            .collect();
+
+        let now = now_ms();
+        let mut statements = Vec::new();
+        let mut counts = ProfileSyncApplyCounts::default();
+
+        for item in incoming {
+            if let Some(current) = existing_by_id.get(item.profile_id.as_str())
+                && current.settings == item.settings
+                && current.archived_at.is_some() == item.archived_at.is_some()
+            {
+                counts.skipped_unchanged += 1;
+                continue;
+            }
+            let encoded = serde_json::to_string(&item.settings)?;
+            let created_at = if item.created_at > 0 {
+                item.created_at
+            } else {
+                now
+            };
+            let updated_at = if item.updated_at > 0 {
+                item.updated_at
+            } else {
+                now
+            };
+            let archived_val: libsql::Value = match item.archived_at {
+                Some(ts) => ts.into(),
+                None => libsql::Value::Null,
+            };
+            let mut params = owner_params(owner);
+            params.extend([
+                s(item.profile_id.as_str()),
+                s(encoded),
+                created_at.into(),
+                updated_at.into(),
+                archived_val,
+            ]);
+            statements.push((
+                "INSERT INTO orch_profiles \
+                 (tenant_id, user_id, profile_id, settings, created_at, updated_at, archived_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+                 ON CONFLICT (tenant_id, user_id, profile_id) DO UPDATE SET \
+                 settings = excluded.settings, \
+                 updated_at = excluded.updated_at, \
+                 archived_at = excluded.archived_at"
+                    .to_string(),
+                params,
+            ));
+            counts.applied += 1;
+        }
+
+        if !statements.is_empty() {
+            self.tx(statements).await?;
+        }
+        Ok(counts)
+    }
+}
+
+/// Raw profile row used by configuration sync (includes archived profiles and
+/// omits derived `last_used_at` / `thread_count`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfileSyncRecord {
+    pub profile_id: ProfileId,
+    pub settings: ProfileSettings,
+    pub created_at: Millis,
+    pub updated_at: Millis,
+    pub archived_at: Option<Millis>,
+}
+
+/// Counts returned by [`Store::apply_profiles_sync`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ProfileSyncApplyCounts {
+    pub applied: u64,
+    pub skipped_unchanged: u64,
+}
+
+fn profile_sync_row(row: &libsql::Row) -> Result<ProfileSyncRecord> {
+    let mut c = Cols::new(row);
+    Ok(ProfileSyncRecord {
+        profile_id: ProfileId::new(c.text()?)?,
+        settings: serde_json::from_str(&c.text()?)?,
+        created_at: c.int()?,
+        updated_at: c.int()?,
+        archived_at: c.oint()?,
+    })
 }
 
 pub fn profile_not_found(id: &ProfileId) -> OrchestratorError {

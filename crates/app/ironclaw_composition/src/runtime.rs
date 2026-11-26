@@ -506,6 +506,9 @@ pub struct RebornRuntime {
     pub(crate) broadcast_budget_event_sink: Arc<ironclaw_resources::BroadcastBudgetEventSink>,
     pub(crate) external_tool_catalog: Arc<dyn ExternalToolCatalog>,
     pub(crate) persistent_approval_policies: Arc<ComposedPersistentApprovalPolicyStore>,
+    /// Standalone hosts: the storage root and the `SYSTEM.md` under it, for
+    /// configuration sync's `prompts` domain (`config_sync_assembly`).
+    pub(crate) system_prompt_paths: Option<(std::path::PathBuf, std::path::PathBuf)>,
     pub(crate) tool_permission_overrides: Arc<ComposedToolPermissionOverrideStore>,
     pub(crate) auto_approve_settings: Arc<ComposedAutoApproveSettingStore>,
     pub(crate) extension_registry: Arc<ExtensionRegistry>,

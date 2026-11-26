@@ -8,9 +8,9 @@
 //! - [`export`]: what is taken from the data folder and how.
 //! - [`import`]: verification into a staging folder, then the move into
 //!   place.
-//! - [`paths`]: the home-path rewrite.
 //! - [`passphrase`]: prompting or reading the passphrase (never argv).
 //!
+//! The home-path rewrite lives in `ironclaw_config::HomePathRewrite`.
 //! The database snapshot, environment-record scrub, record path rewrite and
 //! the secrets master key are composition's (`ironclaw_composition::setup_transfer`).
 
@@ -18,7 +18,6 @@ pub(crate) mod export;
 pub(crate) mod format;
 pub(crate) mod import;
 pub(crate) mod passphrase;
-pub(crate) mod paths;
 pub(crate) mod ssh;
 
 #[cfg(test)]

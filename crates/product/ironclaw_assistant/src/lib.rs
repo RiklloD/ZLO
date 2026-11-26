@@ -82,6 +82,7 @@ pub mod supermemory;
 pub mod usage;
 
 pub mod computer_use;
+pub mod config_sync;
 
 /// Test-only access to the stable Inbox identity used by production run
 /// notification publishers and lifecycle resolvers.

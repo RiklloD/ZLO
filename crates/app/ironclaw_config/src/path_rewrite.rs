@@ -1,21 +1,31 @@
-//! The one place absolute paths from the source machine are moved to the
-//! target machine: the source data folder becomes the target data folder,
-//! then anything else under the source home becomes the same path under the
-//! target home (`/Users/ana/src/app` → `/home/ana/src/app`).
+//! Bounded home- and data-folder path rewriting.
 //!
-//! A path is only rewritten where it starts a value or a quoted string and
-//! ends at a separator, a quote or the end, so `/Users/ana` never matches
-//! inside `/Users/anabel` or in the middle of a sentence. `~/…` paths are
-//! already portable and stay as they are.
+//! Used both by offline setup bundles (`zlo import`, direct source → target
+//! rewrite) and continuous config sync (export normalizes to `$ZLO_HOME` /
+//! `$HOME` tokens; apply expands tokens back to the target's folders).
+//!
+//! A prefix is only rewritten where it starts a value or a quoted string and
+//! ends at a separator, a quote, or the end, so `/Users/ana` never matches
+//! inside `/Users/anabel` or in the middle of a sentence, and `$HOME` never
+//! matches `$HOME2`. `~/…` paths are already portable and stay as they are.
+
+/// Canonical token representing the ZLO data folder (`~/.zlo` / `ZLO_HOME`).
+pub const ZLO_HOME_TOKEN: &str = "$ZLO_HOME";
+
+/// Canonical token representing the user's home directory (`HOME`).
+pub const USER_HOME_TOKEN: &str = "$HOME";
 
 /// Ordered prefix replacements (most specific first).
-#[derive(Debug, Clone)]
-pub(crate) struct HomePathRewrite {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HomePathRewrite {
     pairs: Vec<(String, String)>,
 }
 
 impl HomePathRewrite {
-    pub(crate) fn new(
+    /// Direct source → target rewrite for absolute paths: the source data
+    /// folder becomes the target data folder, then anything else under the
+    /// source home becomes the same path under the target home.
+    pub fn new(
         source_data_folder: &str,
         target_data_folder: &str,
         source_home: &str,
@@ -36,13 +46,43 @@ impl HomePathRewrite {
         Self { pairs }
     }
 
-    pub(crate) fn is_identity(&self) -> bool {
+    /// Export normalizer: rewrites the host's `data_folder` to `$ZLO_HOME` and
+    /// `home` to `$HOME` (data folder first so `$ZLO_HOME` wins when it sits
+    /// inside `$HOME`).
+    pub fn to_tokens(data_folder: &str, home: &str) -> Self {
+        let mut pairs = Vec::new();
+        for (from, to) in [(data_folder, ZLO_HOME_TOKEN), (home, USER_HOME_TOKEN)] {
+            let from = from.trim_end_matches('/');
+            if from.len() > 1 && from.starts_with('/') {
+                pairs.push((from.to_string(), to.to_string()));
+            }
+        }
+        Self { pairs }
+    }
+
+    /// Apply expander: rewrites `$ZLO_HOME` to `target_data_folder` and `$HOME`
+    /// to `target_home`.
+    pub fn from_tokens(target_data_folder: &str, target_home: &str) -> Self {
+        let mut pairs = Vec::new();
+        for (from, to) in [
+            (ZLO_HOME_TOKEN, target_data_folder),
+            (USER_HOME_TOKEN, target_home),
+        ] {
+            let to = to.trim_end_matches('/');
+            if to.len() > 1 && to.starts_with('/') {
+                pairs.push((from.to_string(), to.to_string()));
+            }
+        }
+        Self { pairs }
+    }
+
+    pub fn is_identity(&self) -> bool {
         self.pairs.is_empty()
     }
 
     /// `text` with every bounded occurrence rewritten, or `None` when
     /// nothing changed.
-    pub(crate) fn rewrite(&self, text: &str) -> Option<String> {
+    pub fn rewrite(&self, text: &str) -> Option<String> {
         let mut out = String::with_capacity(text.len());
         let mut changed = false;
         let mut rest = text;
@@ -70,6 +110,12 @@ impl HomePathRewrite {
             at_start = false;
         }
         changed.then_some(out)
+    }
+
+    /// Convenience helper returning the rewritten string or the original
+    /// string when nothing matched.
+    pub fn rewrite_or_keep(&self, text: &str) -> String {
+        self.rewrite(text).unwrap_or_else(|| text.to_string())
     }
 }
 
@@ -130,5 +176,24 @@ mod tests {
                 .is_identity()
         );
         assert!(HomePathRewrite::new("/", "/x", "/", "/y").is_identity());
+    }
+
+    #[test]
+    fn token_round_trip_normalizes_and_expands() {
+        let to_tok = HomePathRewrite::to_tokens("/Users/ana/.zlo", "/Users/ana");
+        let from_tok = HomePathRewrite::from_tokens("/srv/zlo", "/home/bob");
+
+        let norm_src = to_tok.rewrite_or_keep("/Users/ana/src/app");
+        assert_eq!(norm_src, "$HOME/src/app");
+        assert_eq!(from_tok.rewrite_or_keep(&norm_src), "/home/bob/src/app");
+
+        let norm_zlo = to_tok.rewrite_or_keep("/Users/ana/.zlo/skills");
+        assert_eq!(norm_zlo, "$ZLO_HOME/skills");
+        assert_eq!(from_tok.rewrite_or_keep(&norm_zlo), "/srv/zlo/skills");
+
+        // Token lookalikes are untouched.
+        assert_eq!(from_tok.rewrite("$HOME2/src"), None);
+        assert_eq!(from_tok.rewrite("$ZLO_HOME_OLD/x"), None);
+        assert_eq!(from_tok.rewrite("~/src/app"), None);
     }
 }
