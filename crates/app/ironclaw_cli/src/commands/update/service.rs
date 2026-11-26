@@ -187,10 +187,11 @@ impl SourceSelfUpdate {
             available,
             last_run: records::last_run(&self.paths, locked, Utc::now())?,
             can_enable: !configured && self.can_enable(),
-            // A build of what already runs is nothing to install.
+            // Only a build downloaded over the one running now: not what
+            // already runs, and not one older than something installed since.
             staged: records::read_staged(&self.paths)?
                 .filter(|_| configured)
-                .filter(|staged| self.build.commit.as_deref() != Some(staged.commit.as_str())),
+                .and_then(|staged| staged.offer(self.build.commit.as_deref())),
         })
     }
 
@@ -553,9 +554,10 @@ mod tests {
         std::fs::create_dir_all(paths.staged_dir().join("ZLO.app")).expect("build");
         records::write_staged(
             &paths,
-            &ironclaw_product_contracts::self_update::StagedUpdate {
+            &records::StagedRecord {
                 commit: tip.clone(),
                 staged_at: Utc::now(),
+                base: Some(running.clone()),
             },
         )
         .expect("staged");
@@ -576,16 +578,20 @@ mod tests {
             vec![UpdateJob::Download, UpdateJob::Install]
         );
 
-        // A staged build of what already runs is not offered.
-        records::write_staged(
-            &paths,
-            &ironclaw_product_contracts::self_update::StagedUpdate {
-                commit: running,
-                staged_at: Utc::now(),
-            },
-        )
-        .expect("staged");
-        assert_eq!(routes.status().await.expect("status").staged, None);
+        // A staged build of what already runs is not offered, nor one
+        // downloaded over a build that is no longer the one running.
+        for (commit, base) in [(running.clone(), running.clone()), (tip, "c".repeat(40))] {
+            records::write_staged(
+                &paths,
+                &records::StagedRecord {
+                    commit,
+                    staged_at: Utc::now(),
+                    base: Some(base),
+                },
+            )
+            .expect("staged");
+            assert_eq!(routes.status().await.expect("status").staged, None);
+        }
     }
 
     #[tokio::test]

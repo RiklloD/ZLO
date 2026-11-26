@@ -336,12 +336,12 @@ pub fn button(s: &State, p: &Palette) -> El {
         .press_scale(design::motion::PRESS)
         .on_press(press);
     // With something to preview, resting on the button opens the card;
-    // otherwise the plain tooltip.
-    b = if preview(s).is_some() {
-        b.on_hover_change(|s: &mut State, inside, _tx: &mut Tx| hover(s, false, inside))
-    } else {
-        b.help(tip)
-    };
+    // otherwise the plain tooltip. The hover is followed in every state, so
+    // leaving is never missed when the card comes or goes under the pointer.
+    b = b.on_hover_change(|s: &mut State, inside, _tx: &mut Tx| hover(s, false, inside));
+    if preview(s).is_none() {
+        b = b.help(tip);
+    }
     match line {
         None => b = b.w(design::SIDEBAR_CONTROL).justify_center().child(mark),
         Some(line) => {
@@ -504,7 +504,10 @@ pub fn downloaded_toast(s: &State, k: &Kit, layer: &mut Vec<El>) {
 /// The computers the dialog lists, in the order an install runs them.
 /// `keys`: the dialog's computers, already in that order.
 fn listed(s: &State, keys: &[String]) -> Vec<(String, String, Pending)> {
+    // The same rule the install dispatches by (`updates::install_job`), so
+    // the dialog never lists a computer its button would skip.
     keys.iter()
+        .filter(|key| updates::install_job(&s.remote.updates, key).is_some())
         .filter_map(|key| match s.remote.updates.rows.get(key) {
             Some(RowState::Downloaded(p) | RowState::Behind(p)) => {
                 Some((key.clone(), computer_label(s, key), p.clone()))

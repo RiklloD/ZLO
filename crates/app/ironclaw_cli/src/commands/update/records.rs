@@ -199,13 +199,40 @@ pub(crate) fn write_check(paths: &UpdatePaths, check: &CheckRecord) -> anyhow::R
     write_json(paths, &paths.check_file(), check)
 }
 
+/// `staged.json`: the downloaded build, and the build it was downloaded
+/// over.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct StagedRecord {
+    /// The commit the staged build was built from.
+    pub commit: String,
+    pub staged_at: DateTime<Utc>,
+    /// The commit of the build that was running when it was downloaded.
+    /// The staged build is an update only over that build: once something
+    /// else got installed (a newer `zlo update`, `bundle.sh`), installing
+    /// it could go backwards.
+    pub base: Option<String>,
+}
+
+impl StagedRecord {
+    /// What the wire offers while `running` runs: the staged build, when
+    /// it was downloaded over exactly this build and is not this build.
+    pub(crate) fn offer(&self, running: Option<&str>) -> Option<StagedUpdate> {
+        (self.base.as_deref() == running && running != Some(self.commit.as_str())).then(|| {
+            StagedUpdate {
+                commit: self.commit.clone(),
+                staged_at: self.staged_at,
+            }
+        })
+    }
+}
+
 /// The downloaded build, when its record and its folder are both there.
-pub(crate) fn read_staged(paths: &UpdatePaths) -> anyhow::Result<Option<StagedUpdate>> {
-    let staged: Option<StagedUpdate> = read_json(&paths.staged_file())?;
+pub(crate) fn read_staged(paths: &UpdatePaths) -> anyhow::Result<Option<StagedRecord>> {
+    let staged: Option<StagedRecord> = read_json(&paths.staged_file())?;
     Ok(staged.filter(|_| paths.staged_dir().is_dir()))
 }
 
-pub(crate) fn write_staged(paths: &UpdatePaths, staged: &StagedUpdate) -> anyhow::Result<()> {
+pub(crate) fn write_staged(paths: &UpdatePaths, staged: &StagedRecord) -> anyhow::Result<()> {
     write_json(paths, &paths.staged_file(), staged)
 }
 
@@ -415,9 +442,10 @@ mod tests {
         let home = tempfile::tempdir().expect("tempdir");
         let paths = UpdatePaths::new(home.path());
         assert_eq!(read_staged(&paths).expect("read"), None);
-        let staged = StagedUpdate {
+        let staged = StagedRecord {
             commit: "b".repeat(40),
             staged_at: Utc::now(),
+            base: Some("a".repeat(40)),
         };
         write_staged(&paths, &staged).expect("write");
         assert_eq!(
@@ -426,7 +454,17 @@ mod tests {
             "a record without its build is nothing to install"
         );
         std::fs::create_dir_all(paths.staged_dir().join("ZLO.app")).expect("build");
-        assert_eq!(read_staged(&paths).expect("read"), Some(staged));
+        assert_eq!(read_staged(&paths).expect("read"), Some(staged.clone()));
+        // Offered only over the build it was downloaded over.
+        let (a, b, c) = ("a".repeat(40), "b".repeat(40), "c".repeat(40));
+        assert_eq!(staged.offer(Some(&a)).map(|o| o.commit), Some(b.clone()));
+        assert_eq!(staged.offer(Some(&b)), None, "already running it");
+        assert_eq!(
+            staged.offer(Some(&c)),
+            None,
+            "something else was installed since: installing it could go backwards"
+        );
+        assert_eq!(staged.offer(None), None);
         clear_staged(&paths).expect("clear");
         assert_eq!(read_staged(&paths).expect("read"), None);
         assert!(!paths.staged_dir().exists());

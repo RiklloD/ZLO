@@ -265,6 +265,13 @@ pub fn after_poll(job: UpdateJob, since: Option<DateTime<Utc>>, status: &UpdateS
     if !ours {
         return Poll::Continue(busy("Starting".into()));
     }
+    // A job of another kind started after ours (another client's): its
+    // outcome says nothing about ours.
+    if run.job != job {
+        return Poll::Done(RowState::Failed(
+            "another update job started there; check for updates again".into(),
+        ));
+    }
     match run.state {
         // A download ends as what the machine now says: downloaded, or up
         // to date when there was nothing for it to build.
@@ -388,11 +395,21 @@ async fn run_one(m: Arc<dyn Machine>, job: UpdateJob, report: Report, timing: Ti
     };
     let since = match started {
         Ok(status) => status.last_run.started_at,
-        // Someone else started one: watch that job.
-        Err(UpdateCallError::Running) => match m.status().await {
+        // Someone else started a whole update: watch that job, it does
+        // what we asked. A download or install of ours cannot be another
+        // client's job (it may be the other half): say what the computer
+        // says now and stop.
+        Err(UpdateCallError::Running) if job == UpdateJob::Update => match m.status().await {
             Ok(status) => status.last_run.started_at,
             Err(_) => None,
         },
+        Err(UpdateCallError::Running) => {
+            say(match m.status().await {
+                Ok(status) => from_check(Ok(&status)),
+                Err(_) => RowState::Updating(String::new()),
+            });
+            return false;
+        }
         Err(UpdateCallError::NotSetUp(_)) => {
             say(RowState::NotSetUp { can_enable: false });
             return false;
@@ -812,11 +829,7 @@ pub fn waiting_keys(updates: &UpdatesState) -> Vec<String> {
 /// and those behind on a backend too old to download (updated in one go),
 /// the others by key, This Mac last (the order an update runs them in).
 pub fn installable_keys(updates: &UpdatesState) -> Vec<String> {
-    keys_where(updates, |key, row| match row {
-        RowState::Downloaded(_) => true,
-        RowState::Behind(_) => updates.no_download.contains(key),
-        _ => false,
-    })
+    keys_where(updates, |key, _| install_job(updates, key).is_some())
 }
 
 fn keys_where(updates: &UpdatesState, keep: impl Fn(&str, &RowState) -> bool) -> Vec<String> {
@@ -882,16 +895,23 @@ pub fn download_waiting(s: &mut State) {
 /// downloaded build is installed; a backend too old to download updates in
 /// one go.
 pub fn install_keys(s: &mut State, keys: Vec<String>) {
-    let no_download = s.remote.updates.no_download.clone();
-    run_update(s, move |key| {
-        keys.iter().any(|k| k == key).then(|| {
-            if no_download.contains(key) {
-                UpdateJob::Update
-            } else {
-                UpdateJob::Install
-            }
-        })
-    });
+    let jobs: HashMap<String, UpdateJob> = keys
+        .iter()
+        .filter_map(|key| Some((key.clone(), install_job(&s.remote.updates, key)?)))
+        .collect();
+    run_update(s, move |key| jobs.get(key).copied());
+}
+
+/// What "restart to install" runs on `key` now, from its current row (the
+/// dialog lists exactly the computers this names a job for): a download is
+/// installed; a computer behind on a backend too old to download updates in
+/// one go; anything else is left alone.
+pub fn install_job(updates: &UpdatesState, key: &str) -> Option<UpdateJob> {
+    match updates.rows.get(key)? {
+        RowState::Downloaded(_) => Some(UpdateJob::Install),
+        RowState::Behind(_) if updates.no_download.contains(key) => Some(UpdateJob::Update),
+        _ => None,
+    }
 }
 
 /// Start `job_for` on each computer it names a job for (the others are
@@ -1451,16 +1471,15 @@ mod tests {
         // A download job's end reads the machine again.
         let mut done = staged(3, &"b".repeat(40));
         done.last_run = status(UpdateRunState::Succeeded, Some(10), "Downloaded").last_run;
+        done.last_run.job = UpdateJob::Download;
         assert!(matches!(
             after_poll(UpdateJob::Download, Some(at(10)), &done),
             Poll::Done(RowState::Downloaded(_))
         ));
+        let mut building = status(UpdateRunState::Running, Some(10), "Building");
+        building.last_run.job = UpdateJob::Download;
         assert_eq!(
-            after_poll(
-                UpdateJob::Download,
-                Some(at(10)),
-                &status(UpdateRunState::Running, Some(10), "Building")
-            ),
+            after_poll(UpdateJob::Download, Some(at(10)), &building),
             Poll::Continue(RowState::Downloading("Building".into()))
         );
     }
@@ -1472,6 +1491,7 @@ mod tests {
         running.last_run.job = UpdateJob::Download;
         let mut done = staged(2, &"b".repeat(40));
         done.last_run = status(UpdateRunState::Succeeded, Some(10), "Downloaded").last_run;
+        done.last_run.job = UpdateJob::Download;
         let studio = Arc::new(Fake {
             key: "studio".into(),
             log: log.clone(),
@@ -1542,6 +1562,55 @@ mod tests {
             last(&seen.lock().unwrap(), THIS_MAC),
             RowState::Updated("Updated to b".into())
         );
+    }
+
+    #[tokio::test]
+    async fn an_install_that_meets_another_clients_download_never_reads_as_updated() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut theirs = status(UpdateRunState::Running, Some(20), "Building c");
+        theirs.last_run.job = UpdateJob::Download;
+        let mut done = theirs.clone();
+        done.last_run.state = UpdateRunState::Succeeded;
+        // Install is refused (their download holds the lock).
+        let studio = Fake::machine(
+            "studio",
+            &log,
+            Err(UpdateCallError::Running),
+            vec![Ok(theirs), Ok(done.clone())],
+        );
+        let (report, seen) = recorder();
+        update_all(vec![(studio, UpdateJob::Install)], None, report, fast()).await;
+        let seen = seen.lock().unwrap().clone();
+        assert_eq!(
+            last(&seen, "studio"),
+            RowState::Downloading("Building c".into()),
+            "says what is happening there: {seen:?}"
+        );
+        assert!(
+            !seen.iter().any(|(_, r)| matches!(r, RowState::Updated(_))),
+            "{seen:?}"
+        );
+        // And a poll that finds another kind of job after ours stops there.
+        assert!(matches!(
+            after_poll(UpdateJob::Install, Some(at(10)), &done),
+            Poll::Done(RowState::Failed(_))
+        ));
+    }
+
+    #[test]
+    fn the_install_dispatches_from_the_current_row() {
+        let mut u = UpdatesState::default();
+        u.rows.insert("a".into(), RowState::downloaded(2));
+        u.rows.insert("b".into(), RowState::behind(2));
+        u.rows.insert("c".into(), RowState::behind(2));
+        u.no_download.extend(["a".to_string(), "c".to_string()]);
+        // A download wins over an old "too old to download" note (the
+        // backend was updated since); a plain behind row is not installed.
+        assert_eq!(install_job(&u, "a"), Some(UpdateJob::Install));
+        assert_eq!(install_job(&u, "b"), None);
+        assert_eq!(install_job(&u, "c"), Some(UpdateJob::Update));
+        assert_eq!(install_job(&u, "gone"), None);
+        assert_eq!(installable_keys(&u), vec!["a".to_string(), "c".to_string()]);
     }
 
     #[tokio::test]

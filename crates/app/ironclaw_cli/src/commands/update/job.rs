@@ -36,17 +36,24 @@ use std::process::{Command, Stdio};
 
 use anyhow::Context as _;
 use ironclaw_config::{REBORN_HOME_ENV, REBORN_PROFILE_ENV, SourceUpdateSettings};
-use ironclaw_product_contracts::self_update::{StagedUpdate, UpdateJob, UpdateRunState};
+use ironclaw_product_contracts::self_update::{UpdateJob, UpdateRunState};
 
 use super::git::{Checkout, Scope};
-use super::records::{self, RunRecord, UpdatePaths};
+use super::records::{self, RunRecord, StagedRecord, UpdatePaths};
 
 /// Where `cargo build --release -p ironclaw --bin zlo` leaves the binary.
 const BUILT_BINARY: &str = "target/release/zlo";
 /// Where `bundle.sh --no-install` leaves the app.
 const BUILT_APP: &str = "tools/ironclaw_rune/target/ZLO.app";
-/// The script that swaps a built ZLO.app in (quit, replace, reopen).
-const INSTALL_APP_SCRIPT: &str = "tools/ironclaw_rune/install_app.sh";
+/// The scripts that swap a built ZLO.app in (quit, replace, reopen), staged
+/// with the app so the install never depends on the checkout's state then.
+const INSTALL_SCRIPTS: [&str; 2] = [
+    "tools/ironclaw_rune/install_app.sh",
+    "tools/ironclaw_rune/running.sh",
+];
+/// Tells `running.sh` the pid of the detached updater, where its walk up
+/// the process tree stops: the ZLO above it is what the install quits.
+const UPDATER_PID_ENV: &str = "ZLO_UPDATER_PID";
 
 /// How this host runs IronClaw, read from the backend binary's path.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -238,7 +245,9 @@ fn steps(
     };
     let short = short(&head);
     if input.job == UpdateJob::Download
-        && records::read_staged(input.paths)?.is_some_and(|staged| staged.commit == head)
+        && records::read_staged(input.paths)?
+            .and_then(|staged| staged.offer(input.running_commit))
+            .is_some_and(|staged| staged.commit == head)
     {
         return Ok(format!("{short} is downloaded. Restart to install it."));
     }
@@ -303,11 +312,25 @@ fn stage(
     let staging = input.paths.staged_dir();
     std::fs::create_dir_all(&staging).with_context(|| format!("create {}", staging.display()))?;
     host.build_staged(&input.install, &input.settings.repo, &staging, log)?;
+    // The checkout must still be at `head`: the build read it, and the
+    // record names it. A checkout moved under the build (by hand) would
+    // stage one commit's build under another's name.
+    let built = Checkout::open(&input.settings.repo)
+        .and_then(|c| c.head())
+        .map_err(anyhow::Error::new)?;
+    if built != head {
+        anyhow::bail!(
+            "the checkout moved to {} while {} was building; try again",
+            short(&built),
+            short(head)
+        );
+    }
     records::write_staged(
         input.paths,
-        &StagedUpdate {
+        &StagedRecord {
             commit: head.to_string(),
             staged_at: chrono::Utc::now(),
+            base: input.running_commit.map(str::to_string),
         },
     )
 }
@@ -320,14 +343,19 @@ fn install(
     log: &mut std::fs::File,
     step: &mut Step<'_>,
 ) -> anyhow::Result<String> {
-    let Some(staged) = records::read_staged(input.paths)? else {
+    let Some(downloaded) = records::read_staged(input.paths)? else {
         anyhow::bail!("Nothing is downloaded to install. Download the update first.");
     };
-    let short = short(&staged.commit).to_string();
-    if input.running_commit == Some(staged.commit.as_str()) {
+    // Downloaded over another build (something else got installed since):
+    // installing it could go backwards. It is spent either way.
+    let Some(staged) = downloaded.offer(input.running_commit) else {
         records::clear_staged(input.paths)?;
-        return Ok(format!("Already running {short}."));
-    }
+        anyhow::bail!(
+            "The downloaded update ({}) no longer applies to the build running here. Download it again.",
+            short(&downloaded.commit)
+        );
+    };
+    let short = short(&staged.commit).to_string();
     step(record, &format!("Installing {short}; restarting"), log)?;
     host.install_staged(
         &input.install,
@@ -568,7 +596,9 @@ impl SystemUpdateHost {
         for (key, _) in std::env::vars_os() {
             let Some(key) = key.to_str() else { continue };
             let keep = matches!(key, "CARGO_HOME");
-            if (key.starts_with("CARGO_") && !keep) || key == "ZLO_BACKEND" {
+            // `ZLO_LIGHT` would build the Light app; `ZLO_BACKEND` would
+            // copy some other backend in.
+            if (key.starts_with("CARGO_") && !keep) || matches!(key, "ZLO_BACKEND" | "ZLO_LIGHT") {
                 command.env_remove(key);
             }
         }
@@ -614,16 +644,34 @@ impl UpdateHost for SystemUpdateHost {
                 if !bundle_script.is_file() {
                     anyhow::bail!("{} is missing from the checkout", bundle_script.display());
                 }
+                // An earlier build's app must never pass for this one.
+                let built = repo.join(BUILT_APP);
+                if built.exists() {
+                    std::fs::remove_dir_all(&built)
+                        .with_context(|| format!("remove {}", built.display()))?;
+                }
                 let mut command = Self::command("/bin/sh", repo, log)?;
                 command.arg(bundle_script).arg("--no-install");
                 command.envs(bundle_env(app, signed_adhoc(app)));
                 run_checked(command, "bundle.sh")?;
+                if !built.join("Contents/MacOS/zlo").is_file() {
+                    anyhow::bail!("bundle.sh left no app at {}", built.display());
+                }
                 // A copy of its own: a later build in the checkout must not
                 // change what waits to be installed. `ditto` keeps the
                 // signature intact.
                 let mut copy = Self::command("/usr/bin/ditto", repo, log)?;
-                copy.arg(repo.join(BUILT_APP)).arg(staging.join("ZLO.app"));
-                run_checked(copy, "ditto")
+                copy.arg(&built).arg(staging.join("ZLO.app"));
+                run_checked(copy, "ditto")?;
+                for script in INSTALL_SCRIPTS {
+                    let from = repo.join(script);
+                    let name = from
+                        .file_name()
+                        .ok_or_else(|| anyhow::anyhow!("{script} has no file name"))?;
+                    std::fs::copy(&from, staging.join(name))
+                        .with_context(|| format!("stage {}", from.display()))?;
+                }
+                Ok(())
             }
             InstallKind::Binary { target } => {
                 refuse_symlinked_binary(target)?;
@@ -648,12 +696,18 @@ impl UpdateHost for SystemUpdateHost {
                 if !built.is_dir() {
                     anyhow::bail!("the downloaded app is missing ({})", built.display());
                 }
-                let script = repo.join(INSTALL_APP_SCRIPT);
-                if !script.is_file() {
-                    anyhow::bail!("{} is missing from the checkout", script.display());
+                // The scripts staged with the app, never the checkout's
+                // (it may have moved on, or back, since the download).
+                let script = staging.join("install_app.sh");
+                if !script.is_file() || !staging.join("running.sh").is_file() {
+                    anyhow::bail!("the downloaded update is missing its install script");
                 }
                 let mut command = Self::command("/bin/sh", repo, log)?;
-                command.arg(script).arg(&built).arg(app);
+                command
+                    .arg(script)
+                    .arg(&built)
+                    .arg(app)
+                    .env(UPDATER_PID_ENV, std::process::id().to_string());
                 run_checked(command, "install_app.sh")
             }
             InstallKind::Binary { target } => {
@@ -1007,9 +1061,10 @@ mod tests {
         std::fs::create_dir_all(paths.staged_dir()).expect("dir");
         records::write_staged(
             &paths,
-            &StagedUpdate {
+            &StagedRecord {
                 commit: "c".repeat(40),
                 staged_at: chrono::Utc::now(),
+                base: None,
             },
         )
         .expect("old staged");
@@ -1040,6 +1095,52 @@ mod tests {
                 .contains("Already up to date")
         );
         assert_eq!(records::read_staged(&paths).expect("read"), None);
+    }
+
+    #[test]
+    fn a_download_over_another_build_is_never_installed() {
+        let r = repos();
+        let home = tempfile::tempdir().expect("home");
+        let paths = UpdatePaths::new(home.path());
+        let settings = SourceUpdateSettings {
+            repo: r.checkout.clone(),
+            branch: None,
+        };
+        // Downloaded over A; then C got installed some other way.
+        std::fs::create_dir_all(paths.staged_dir()).expect("dir");
+        records::write_staged(
+            &paths,
+            &StagedRecord {
+                commit: "b".repeat(40),
+                staged_at: chrono::Utc::now(),
+                base: Some("a".repeat(40)),
+            },
+        )
+        .expect("staged");
+        let host = RecordingHost::default();
+        let running = "c".repeat(40);
+        let refused = run_job(
+            JobInput {
+                job: UpdateJob::Install,
+                paths: &paths,
+                settings: &settings,
+                running_commit: Some(&running),
+                install: binary(),
+            },
+            &host,
+            &mut |_| {},
+        )
+        .expect("runs")
+        .expect("not locked");
+        assert_eq!(refused.state, UpdateRunState::Failed);
+        assert!(
+            refused
+                .message
+                .expect("message")
+                .contains("no longer applies"),
+        );
+        assert!(host.installs.borrow().is_empty(), "nothing went backwards");
+        assert_eq!(records::read_staged(&paths).expect("read"), None, "spent");
     }
 
     #[test]
@@ -1325,6 +1426,50 @@ mod tests {
                 "/u/ironclaw"
             ]
         );
+    }
+
+    #[test]
+    fn the_quit_walk_stops_at_the_updater_so_the_zlo_above_it_quits() {
+        let running =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tools/ironclaw_rune/running.sh");
+        // An outer shell stands in for the updater; the inner one is the
+        // install script. Without the variable the walk climbs past the
+        // updater into whatever started it (the ZLO that must quit).
+        let walk = |updater_env: bool| {
+            let inner = format!(
+                ". '{}'; zlo_self_and_ancestors; echo; echo \"parent=$PPID\"",
+                running.display()
+            );
+            // `; true` keeps the outer shell alive (no exec into the
+            // inner one), as the updater stays alive under its script.
+            let outer = if updater_env {
+                format!("{UPDATER_PID_ENV}=$$ /bin/sh -c \"$0\"; true")
+            } else {
+                "/bin/sh -c \"$0\"; true".to_string()
+            };
+            let out = Command::new("/bin/sh")
+                .args(["-c", &outer, &inner])
+                .output()
+                .expect("sh");
+            String::from_utf8(out.stdout).expect("utf8")
+        };
+        let stopped = walk(true);
+        let mut lines = stopped.lines();
+        let pids: Vec<&str> = lines.next().expect("walk").split_whitespace().collect();
+        let updater = lines
+            .next()
+            .and_then(|l| l.strip_prefix("parent="))
+            .expect("parent");
+        assert_eq!(pids.len(), 2, "self and the updater only: {stopped}");
+        assert_eq!(pids[1], updater);
+        let climbed = walk(false);
+        let pids = climbed
+            .lines()
+            .next()
+            .expect("walk")
+            .split_whitespace()
+            .count();
+        assert!(pids > 2, "without it the walk climbs on: {climbed}");
     }
 
     #[test]
