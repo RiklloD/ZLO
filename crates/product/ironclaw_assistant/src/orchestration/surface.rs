@@ -74,6 +74,9 @@ pub struct OrchestratedProductSurface {
     /// The backend's triage sessions folder: a playbook link naming one of
     /// its sessions brings that session's files inline (`mentions`).
     triage_sessions: Option<std::path::PathBuf>,
+    /// Caller-scoped inbox invalidation hints emitted on marks, goals,
+    /// profile threads, and session imports.
+    inbox_hints: Arc<crate::inbox_hints::InboxHintBus>,
 }
 
 impl OrchestratedProductSurface {
@@ -90,6 +93,7 @@ impl OrchestratedProductSurface {
             importer: SessionImporter::from_env().map(Arc::new),
             workspace: Arc::new(NoWorkspaceFolders),
             triage_sessions: None,
+            inbox_hints: Arc::new(crate::inbox_hints::InboxHintBus::new()),
         }
     }
 
@@ -102,6 +106,13 @@ impl OrchestratedProductSurface {
     /// Resolve `@`-mentions of `/workspace/...` under `workspace`'s folder.
     pub fn with_workspace_folders(mut self, workspace: Arc<dyn WorkspaceFolders>) -> Self {
         self.workspace = workspace;
+        self
+    }
+
+    /// Share the runtime's [`crate::inbox_hints::InboxHintBus`] so inbox
+    /// mutations and orchestrated thread actions wake live subscribers.
+    pub fn with_inbox_hints(mut self, inbox_hints: Arc<crate::inbox_hints::InboxHintBus>) -> Self {
+        self.inbox_hints = inbox_hints;
         self
     }
 }
@@ -845,21 +856,29 @@ impl OrchestratedProductSurface {
         )
         .await
         {
-            return answer(result).map(Some);
+            let value = answer(result)?;
+            self.inbox_hints.notify_caller(caller, None);
+            return Ok(Some(value));
         }
         Ok(Some(match operation {
             INBOX_MUTATE_COMMAND_ID => {
                 let req: InboxMutationRequest = decode(input)?;
+                let thread_id = req.thread_id.clone();
                 let home = self.home.as_ref();
-                answer(
+                let value = answer(
                     inbox::mutate(engine, home, &self.inner, caller, req)
                         .await?
                         .and_then(to_json),
-                )?
+                )?;
+                self.inbox_hints.notify_caller(caller, Some(thread_id));
+                value
             }
             THREAD_GOAL_SET_COMMAND_ID => {
                 let req: ThreadGoalSetRequest = decode(input)?;
-                answer(inbox::set_goal(engine, caller, req).await.and_then(to_json))?
+                let thread_id = req.thread_id.clone();
+                let value = answer(inbox::set_goal(engine, caller, req).await.and_then(to_json))?;
+                self.inbox_hints.notify_caller(caller, Some(thread_id));
+                value
             }
             _ => return Ok(None),
         }))

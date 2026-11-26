@@ -165,6 +165,7 @@ pub struct RebornIntegrationHarnessBuilder {
     /// Wire production's RootFilesystem-backed durable loop milestone sink.
     durable_milestone_event_store: bool,
     operator_metrics: Option<Arc<ironclaw_operator::OperatorMetrics>>,
+    inbox_hints: Option<Arc<ironclaw_assistant::inbox_hints::InboxHintBus>>,
     /// C-TRACECAP seam: install an in-memory `TurnEventSink` when `true`.
     turn_event_sink: bool,
     /// Tool disclosure mode for the underlying group's ONE planned runtime.
@@ -538,6 +539,16 @@ impl RebornIntegrationHarnessBuilder {
         self
     }
 
+    /// Wire production's `InboxHintTurnEventSink` into the underlying group's
+    /// planned runtime so turn lifecycle transitions publish to `bus`.
+    pub fn with_inbox_hints_for_test(
+        mut self,
+        bus: Arc<ironclaw_assistant::inbox_hints::InboxHintBus>,
+    ) -> Self {
+        self.inbox_hints = Some(bus);
+        self
+    }
+
     /// Force `ToolDisclosureMode::Bridged` for this harness's underlying group
     /// (enabler (b), `REBORN_TOOL_DISCLOSURE=Bridged`), so the bridged decorator
     /// (`ToolDisclosureCapabilityDecorator`) replaces the flat per-capability
@@ -844,6 +855,9 @@ impl RebornIntegrationHarnessBuilder {
         if let Some(metrics) = self.operator_metrics {
             group_builder = group_builder.with_operator_metrics_for_test(metrics);
         }
+        if let Some(bus) = self.inbox_hints {
+            group_builder = group_builder.with_inbox_hints_for_test(bus);
+        }
         group_builder = group_builder.with_tool_disclosure_mode(self.tool_disclosure);
         if let Some(policy) = self.bridged_policy_override {
             group_builder = group_builder.with_capability_surface_policy_for_bridged_test(policy);
@@ -1008,6 +1022,7 @@ impl RebornIntegrationHarness {
             turn_event_sink: false,
             durable_milestone_event_store: false,
             operator_metrics: None,
+            inbox_hints: None,
             // General integration tests stay hermetic across production default
             // changes. Disclosure-specific tests opt into Bridged explicitly.
             tool_disclosure: ToolDisclosureMode::Off,

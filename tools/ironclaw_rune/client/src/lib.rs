@@ -16,6 +16,7 @@ pub mod environments;
 mod error;
 mod history_calls;
 mod inbox_calls;
+mod inbox_stream;
 pub mod keychain;
 mod memory_calls;
 pub mod mentions;
@@ -47,6 +48,7 @@ pub use api::{Client, GateDecision, client_action_id};
 pub use backend::Backend;
 pub use connection::{Connection, Token, prepare_reborn_home, reborn_home};
 pub use error::{ApiErrorBody, ClientError};
+pub use inbox_stream::{InboxEventStream, InboxStreamMessage};
 pub use pages::{AutomationAction, FilePreview, PREVIEW_LIMIT_BYTES};
 pub use stream::{EventStream, StreamMessage, StreamStatus};
 

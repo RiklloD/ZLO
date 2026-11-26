@@ -119,8 +119,9 @@ use ironclaw_webui::webui_v2::{
     WEBUI_V2_ROUTE_SUPERMEMORY_STATUS,
 };
 use ironclaw_webui::webui_v2::{
-    WEBUI_V2_ROUTE_INBOX_LIST, WEBUI_V2_ROUTE_INBOX_MUTATE, WEBUI_V2_ROUTE_TASK_MODELS_GET,
-    WEBUI_V2_ROUTE_TASK_MODELS_SET, WEBUI_V2_ROUTE_THREAD_GOAL_GET, WEBUI_V2_ROUTE_THREAD_GOAL_SET,
+    WEBUI_V2_ROUTE_INBOX_EVENTS, WEBUI_V2_ROUTE_INBOX_LIST, WEBUI_V2_ROUTE_INBOX_MUTATE,
+    WEBUI_V2_ROUTE_TASK_MODELS_GET, WEBUI_V2_ROUTE_TASK_MODELS_SET, WEBUI_V2_ROUTE_THREAD_GOAL_GET,
+    WEBUI_V2_ROUTE_THREAD_GOAL_SET,
 };
 
 /// Expected policy surface for one route. Everything host composition
@@ -1307,6 +1308,23 @@ fn expected_table() -> Vec<Expected> {
             streaming: StreamingMode::None,
             audit: AuditTraceClass::UserAction,
             effect_path: AllowedEffectPath::ProductSurface,
+        },
+        Expected {
+            route_id: WEBUI_V2_ROUTE_INBOX_EVENTS,
+            method: NetworkMethod::Get,
+            pattern: "/api/webchat/v2/inbox/events",
+            listener_class: ListenerClass::LocalGateway,
+            auth_schemes: &[IngressAuthScheme::BearerToken],
+            scope_source: IngressScopeSource::AuthenticatedCaller,
+            body_limit: BodyLimitPolicy::NoBody,
+            rate_limit_max: 30,
+            rate_limit_window_seconds: 60,
+            rate_limit_scope: RateLimitScope::PerCaller,
+            cors: CorsPolicy::SameOriginOnly,
+            websocket_origin: WebSocketOriginPolicy::NotApplicable,
+            streaming: StreamingMode::Sse,
+            audit: AuditTraceClass::StreamingSubscription,
+            effect_path: AllowedEffectPath::ProjectionOnly,
         },
         Expected {
             route_id: WEBUI_V2_ROUTE_TASK_MODELS_GET,

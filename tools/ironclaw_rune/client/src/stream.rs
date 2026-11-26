@@ -31,8 +31,8 @@ use tokio::time::Instant;
 use crate::api::{Client, V2, seg};
 use crate::wire::{StreamErrorFrame, StreamFrame};
 
-const BACKOFF_STEPS: [u64; 6] = [1, 2, 4, 8, 16, 30];
-const STABLE_AFTER: Duration = Duration::from_secs(15);
+pub(crate) const BACKOFF_STEPS: [u64; 6] = [1, 2, 4, 8, 16, 30];
+pub(crate) const STABLE_AFTER: Duration = Duration::from_secs(15);
 const ACTIVITY_TIMEOUT: Duration = Duration::from_secs(45);
 const CHANNEL_DEPTH: usize = 256;
 const LISTENER_PROBE: Duration = Duration::from_secs(1);
@@ -156,7 +156,7 @@ async fn run(client: Client, thread_id: String, tx: mpsc::Sender<StreamMessage>)
 }
 
 /// Sleep up to `max`, returning early once the gateway accepts TCP again.
-async fn wait_for_listener(client: &Client, max: Duration) {
+pub(crate) async fn wait_for_listener(client: &Client, max: Duration) {
     let Some(addr) = listener_addr(&client.connection().base_url) else {
         tokio::time::sleep(max).await;
         return;
@@ -309,7 +309,7 @@ async fn connect_once(
 }
 
 /// Watch raw transport activity, before the SSE parser discards comment heartbeats.
-fn with_activity_timeout<S, T, E>(
+pub(crate) fn with_activity_timeout<S, T, E>(
     stream: S,
     silence: Duration,
 ) -> impl futures::Stream<Item = Result<T, std::io::Error>>
@@ -334,7 +334,7 @@ where
 }
 
 /// +/-20% jitter so many clients don't reconnect in lockstep.
-fn jitter(base: Duration) -> Duration {
+pub(crate) fn jitter(base: Duration) -> Duration {
     let r = (uuid::Uuid::new_v4().as_u128() % 401) as f64 / 1000.0; // 0.0..=0.4
     base.mul_f64(0.8 + r)
 }

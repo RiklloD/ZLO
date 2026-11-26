@@ -537,6 +537,7 @@ impl RebornIntegrationGroup {
             external_tool_specs: None,
             external_tool_catalog: None,
             operator_metrics: None,
+            inbox_hints: None,
         }
     }
 
@@ -1002,6 +1003,8 @@ pub struct RebornIntegrationGroupBuilder {
     /// Operator metrics registry decorated around the durable event sink and
     /// every thread's provider chain, at production's decorator positions.
     pub(crate) operator_metrics: Option<Arc<ironclaw_operator::OperatorMetrics>>,
+    /// Inbox invalidation bus wired via production's `InboxHintTurnEventSink`.
+    pub(crate) inbox_hints: Option<Arc<ironclaw_assistant::inbox_hints::InboxHintBus>>,
 }
 
 impl RebornIntegrationGroupBuilder {
@@ -1276,6 +1279,11 @@ impl RebornIntegrationGroupBuilder {
                     Arc::clone(metrics),
                 ),
             );
+        }
+        if let Some(bus) = &self.inbox_hints {
+            turn_event_sinks.push(Arc::new(
+                ironclaw_assistant::inbox_hints::InboxHintTurnEventSink::new(Arc::clone(bus)),
+            ));
         }
         let composed_turn_event_sink: Option<Arc<dyn TurnEventSink>> = match turn_event_sinks.len()
         {

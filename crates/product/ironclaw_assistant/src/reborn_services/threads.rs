@@ -462,6 +462,8 @@ where
                     map_thread_error(error)
                 }
             })?;
+        self.inbox_hints
+            .notify_caller(&caller, Some(thread.thread_id.as_str().to_string()));
         Ok(RebornCreateThreadResponse { thread })
     }
 
@@ -480,6 +482,8 @@ where
             .delete_thread(&thread_scope, &thread_id)
             .await
             .map_err(map_ownership_probe_error)?;
+        self.inbox_hints
+            .notify_caller(&caller, Some(thread_id.as_str().to_string()));
         Ok(RebornDeleteThreadResponse {
             thread_id,
             deleted: true,

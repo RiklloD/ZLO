@@ -130,6 +130,11 @@ mod tests {
                 DeviceScope::OrchestrationRead,
             ),
             (
+                Method::GET,
+                "/api/webchat/v2/inbox/events",
+                DeviceScope::OrchestrationRead,
+            ),
+            (
                 Method::POST,
                 "/api/webchat/v2/threads/t1/messages",
                 DeviceScope::OrchestrationOperate,

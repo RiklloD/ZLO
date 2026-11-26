@@ -145,6 +145,16 @@ pub(super) async fn assemble_runtime(
         invocation_id: InvocationId::new(),
     };
     let mut services = build_runtime_substrate(services_input).await?;
+    // Shared inbox invalidation bus: wraps the notification store so every
+    // notification write wakes live `GET /api/webchat/v2/inbox/events` streams,
+    // and is handed to `projection_services` so turn lifecycle events feed it.
+    let inbox_hints = Arc::new(ironclaw_assistant::inbox_hints::InboxHintBus::new());
+    services.notification_inbox = Arc::new(
+        ironclaw_assistant::inbox_hints::NotifyingNotificationInbox::new(
+            services.notification_inbox,
+            Arc::clone(&inbox_hints),
+        ),
+    );
     // The stored key no longer feeds the model gateway here (see the
     // post-construction reload below); the NEAR AI MCP bootstrap check is a
     // separate consumer that inspects `llm.config.nearai.api_key` directly,
@@ -548,6 +558,7 @@ pub(super) async fn assemble_runtime(
         Arc::clone(&event_log),
         validated_identity.reply_target_binding_ref.clone(),
     )
+    .with_inbox_hints(inbox_hints)
     .with_thread_service(Arc::clone(&thread_service))
     // A run parked on the native `ask_user` call projects as a form.
     .with_external_tool_catalog(Arc::clone(&services.external_tool_catalog));

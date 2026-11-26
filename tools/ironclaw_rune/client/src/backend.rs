@@ -14,6 +14,7 @@ use tokio::task::JoinHandle;
 
 use crate::api::Client;
 use crate::error::ClientError;
+use crate::inbox_stream::{InboxEventStream, InboxStreamMessage};
 use crate::stream::{EventStream, StreamMessage};
 
 #[derive(Clone)]
@@ -53,5 +54,10 @@ impl Backend {
     pub fn subscribe(&self, thread_id: &str) -> (EventStream, mpsc::Receiver<StreamMessage>) {
         let _guard = self.runtime.enter();
         self.client.subscribe(thread_id)
+    }
+
+    pub fn subscribe_inbox(&self) -> (InboxEventStream, mpsc::Receiver<InboxStreamMessage>) {
+        let _guard = self.runtime.enter();
+        self.client.subscribe_inbox()
     }
 }

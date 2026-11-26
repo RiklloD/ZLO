@@ -290,6 +290,7 @@ pub(crate) fn build_product_surface_with_channel_connection(
         api = api.with_channel_connection_service(channel_connection);
     }
     api = api.with_event_stream(event_stream.unwrap_or_else(|| runtime.product_event_stream()));
+    api = api.with_inbox_hints(runtime.inbox_hints());
     api = api.with_operator_status_service(Arc::new(ReadinessOperatorStatusService::new(
         runtime.readiness.clone(),
     )));
@@ -332,6 +333,7 @@ pub(crate) fn build_product_surface_with_channel_connection(
             runtime
                 .webui_boot_config()
                 .map(|boot| boot.home().triage_sessions_dir()),
+            runtime.inbox_hints(),
         ),
         None => Arc::new(api) as _,
     };

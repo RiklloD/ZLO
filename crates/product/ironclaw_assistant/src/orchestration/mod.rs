@@ -65,6 +65,10 @@ use ironclaw_product_contracts::surface::ProductSurface;
 /// `@`-mentions of workspace paths read from; `triage_sessions` is the
 /// backend's triage folder, whose prepared sessions a playbook link brings
 /// inline. Falls back to `inner` when the runtime cannot be built.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the composition root hands over each collaborator once; a bundle would only rename them"
+)]
 pub fn orchestrate(
     engine: &Arc<Engine>,
     inner: Arc<dyn ProductSurface>,
@@ -73,6 +77,7 @@ pub fn orchestrate(
     routes: Option<Arc<dyn NativeModelRoutes>>,
     workspace: Arc<dyn WorkspaceFolders>,
     triage_sessions: Option<std::path::PathBuf>,
+    inbox_hints: Arc<crate::inbox_hints::InboxHintBus>,
 ) -> Arc<dyn ProductSurface> {
     match AgentLoopRuntime::new(Arc::clone(&inner), session_extension_id, routes) {
         Ok(agent_loop) => engine.register_runtime(Arc::new(agent_loop)),
@@ -82,11 +87,15 @@ pub fn orchestrate(
         }
     }
     engine.set_schedule_planner(Arc::new(schedules::RoutineSchedulePlanner::local()));
+    engine.add_turn_listener(Arc::new(
+        crate::inbox_hints::InboxHintTurnCompletedListener::new(Arc::clone(&inbox_hints)),
+    ));
     engine.start(std::time::Duration::from_secs(2));
     let surface: Arc<dyn ProductSurface> = Arc::new(
         OrchestratedProductSurface::new(inner, Arc::clone(engine), cli_bridge)
             .with_workspace_folders(workspace)
-            .with_triage_sessions(triage_sessions),
+            .with_triage_sessions(triage_sessions)
+            .with_inbox_hints(inbox_hints),
     );
     inbox::title_on_completion(engine, &surface);
     surface

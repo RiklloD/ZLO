@@ -75,6 +75,8 @@ fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     changed |= workspace::intro::poll(s, clock, tx);
     changed |= polled(C::PollWorkspace, workspace::poll(s, tx));
     changed |= polled(C::PollPeers, remote::peers::poll(s, tx));
+    // The inbox push streams follow the connections (opens and closes only).
+    remote::inbox_stream::sync(s);
     // The quick composer's voice controls live in its own window.
     changed |= polled(C::PollQuick, workspace::quick::poll(s));
     // The chat counts its own sources (pacer, clock, copy check, computer).

@@ -965,13 +965,17 @@ fn extract_bearer_token(request: &Request) -> Option<String> {
     None
 }
 
-/// Returns `true` if the request is `GET /api/webchat/v2/threads/{id}/events`.
-/// The thread id must be a single non-empty path segment.
+/// Returns `true` if the request is `GET /api/webchat/v2/threads/{id}/events`
+/// or `GET /api/webchat/v2/inbox/events`.
+/// For thread events, the thread id must be a single non-empty path segment.
 pub(crate) fn is_v2_sse_event_request(request: &Request) -> bool {
     if request.method() != Method::GET {
         return false;
     }
     let path = request.uri().path();
+    if path == "/api/webchat/v2/inbox/events" {
+        return true;
+    }
     let Some(rest) = path.strip_prefix("/api/webchat/v2/threads/") else {
         return false;
     };

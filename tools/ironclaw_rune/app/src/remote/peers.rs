@@ -444,6 +444,18 @@ pub(crate) fn carry_sent(s: &mut State, key: &str, sent: BTreeMap<String, Sent>)
     }
 }
 
+/// Every ready peer's connection, for the inbox push stream: its key, the
+/// connection's generation, and a handle to subscribe on.
+pub(super) fn stream_targets(s: &State) -> Vec<(String, Generation, Backend)> {
+    s.remote
+        .peers
+        .entries
+        .iter()
+        .filter(|p| p.conn == PeerConn::Ready)
+        .filter_map(|p| Some((p.key(), p.generation, p.backend.clone()?)))
+        .collect()
+}
+
 /// Peers in registry order.
 pub fn list(s: &State) -> Vec<&Peer> {
     s.remote.peers.entries.iter().collect()

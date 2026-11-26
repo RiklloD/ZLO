@@ -607,6 +607,7 @@ pub struct RebornServices<
     project_service: Option<Arc<dyn ProjectService>>,
     inbound_attachment_reader: Option<Arc<dyn InboundAttachmentReader>>,
     event_stream: Option<Arc<dyn ProjectionStream>>,
+    inbox_hints: Arc<crate::inbox_hints::InboxHintBus>,
     lifecycle_service: Arc<dyn LifecycleProductService>,
     automation_service: Arc<dyn AutomationProductService>,
     skills_service: Arc<dyn SkillsProductService>,
@@ -691,6 +692,7 @@ where
             project_service: None,
             inbound_attachment_reader: None,
             event_stream: None,
+            inbox_hints: Arc::new(crate::inbox_hints::InboxHintBus::new()),
             lifecycle_service: Arc::new(UnsupportedLifecycleProductService::new_static(
                 "reborn_lifecycle_service_unwired",
             )),
@@ -1214,6 +1216,17 @@ where
         ironclaw_product_contracts::surface::ProductSurfaceStreamResponse,
         ironclaw_product_contracts::surface::ProductSurfaceError,
     > {
+        if request.stream_id.as_deref()
+            == Some(ironclaw_product_contracts::inbox::INBOX_EVENTS_STREAM_ID)
+        {
+            return Ok(
+                ironclaw_product_contracts::surface::ProductSurfaceStreamResponse {
+                    events: Vec::new(),
+                    next_cursor: None,
+                    subscription: Some(self.inbox_hints.subscribe_for_caller(&caller)),
+                },
+            );
+        }
         let request = decode_product_surface_stream_request(request)?;
         if self
             .event_stream
