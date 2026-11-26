@@ -198,20 +198,5 @@ echo "Built $app ($version)"
 
 [ -z "$install" ] && exit 0
 
-# Replace, never overwrite in place: macOS kills a running binary whose
-# signed file changed underneath it. Only the ZLO that runs from $dest is
-# quit and waited for, found by executable path (running.sh): never the
-# updater running this script, whose arguments name $dest, and never
-# another copy of ZLO sharing the bundle id. Quitting ZLO also stops its
-# backend.
-. "$here/running.sh"
-if ! was_running=$(zlo_quit_bundle "$dest" 30); then
-  echo "$NAME did not quit; quit it and run again." >&2
-  exit 1
-fi
-mkdir -p "$(dirname "$dest")"
-rm -rf "$dest"
-cp -R "$app" "$dest"
-echo "Installed $dest"
-[ -n "$was_running" ] && open "$dest"
-exit 0
+# Quit the ZLO that runs from $dest, replace it, reopen it if it was open.
+sh "$here/install_app.sh" "$app" "$dest"

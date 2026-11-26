@@ -1778,7 +1778,14 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // works, for the new-thread picker's rows) and
         // `ProfileWriteRequest::fresh` (create-only: an archived id answers
         // `profile_exists` instead of coming back). No behavior.
-        ("ironclaw_product_contracts", 17_899),
+        // 17_899 -> 17_946 (2026-11-26, download then restart to install):
+        // the tree measures 18_096; the pin is the minimum that passes. +47
+        // lines in `self_update.rs`: the download and install route paths,
+        // `UpdateJob` (which half a job runs), `StagedUpdate` (the
+        // downloaded build `UpdateStatus::staged` names) and the
+        // `nothing_staged` error code. Shared by the backend's routes and
+        // the desktop client; no behavior.
+        ("ironclaw_product_contracts", 17_946),
         // 832 -> 432 (2026-08-12, #7373 refresh merge, main): re-pinned to the
         // measured count — this row still carried the +400 seed pad the
         // 2026-08-07 re-pin removed from its siblings.

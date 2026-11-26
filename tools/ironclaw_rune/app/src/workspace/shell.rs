@@ -17,7 +17,7 @@ use crate::state::{Conn, State};
 mod frame;
 mod main_area;
 mod sidebar;
-mod update_button;
+pub(super) mod update_button;
 
 use frame::ready;
 
@@ -110,7 +110,9 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>) -> El {
         );
     }
     confirm_delete(s, &k, &mut layer);
+    update_button::preview_card(s, &k, &mut layer);
     update_button::confirm(s, &k, &mut layer);
+    update_button::downloaded_toast(s, &k, &mut layer);
     // First-run setup over the home screen, whatever the connection does
     // (it switches computers itself).
     if !s.intro.covers() {

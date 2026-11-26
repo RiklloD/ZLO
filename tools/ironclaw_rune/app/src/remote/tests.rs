@@ -400,7 +400,7 @@ fn the_update_dialog_closes_when_its_updates_are_gone() {
     use super::updates::{RowState, set_row};
     let mut s = state();
     s.remote.registry.upsert(studio());
-    set_row(&mut s, "env-studio".into(), RowState::behind(2));
+    set_row(&mut s, "env-studio".into(), RowState::downloaded(2));
     s.workspace.confirm_update = Some(vec!["env-studio".into()]);
     // Another computer's news leaves it open.
     set_row(
@@ -410,10 +410,10 @@ fn the_update_dialog_closes_when_its_updates_are_gone() {
     );
     assert!(s.workspace.confirm_update.is_some());
     // Its own computer got updated elsewhere: it closes, and stays closed
-    // when that computer falls behind again later.
+    // when that computer downloads again later.
     set_row(&mut s, "env-studio".into(), RowState::UpToDate);
     assert!(s.workspace.confirm_update.is_none());
-    set_row(&mut s, "env-studio".into(), RowState::behind(3));
+    set_row(&mut s, "env-studio".into(), RowState::downloaded(3));
     assert!(s.workspace.confirm_update.is_none());
 }
 

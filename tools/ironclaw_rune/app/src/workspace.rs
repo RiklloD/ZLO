@@ -162,6 +162,8 @@ pub struct WorkspaceState {
     /// with an update waiting when it opened): only they are ever listed or
     /// updated from it.
     pub confirm_update: Option<Vec<String>>,
+    /// The update button's "What's changed" card.
+    pub update_preview: shell::update_button::UpdatePreview,
     pub timers: Timers,
     /// A scene shows the quick composer's card over the shell.
     pub quick_fixture: bool,
@@ -203,6 +205,7 @@ impl Default for WorkspaceState {
             painted: Default::default(),
             confirm_delete: None,
             confirm_update: None,
+            update_preview: Default::default(),
             timers: Timers::default(),
             quick_fixture: false,
             session_import_launched: false,

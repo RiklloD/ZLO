@@ -23,7 +23,8 @@ use chrono::{TimeZone, Utc};
 use ironclaw_host_api::ids::{AgentId, ProjectId, TenantId, UserId};
 use ironclaw_product_contracts::self_update::{
     BuildInfo, OPERATOR_UPDATE_CHECK_PATH, OPERATOR_UPDATE_DISABLE_PATH,
-    OPERATOR_UPDATE_ENABLE_PATH, OPERATOR_UPDATE_PATH, UpdateMethod, UpdateRun, UpdateRunState,
+    OPERATOR_UPDATE_DOWNLOAD_PATH, OPERATOR_UPDATE_ENABLE_PATH, OPERATOR_UPDATE_INSTALL_PATH,
+    OPERATOR_UPDATE_PATH, StagedUpdate, UpdateJob, UpdateMethod, UpdateRun, UpdateRunState,
     UpdateStatus,
 };
 use ironclaw_webui::{
@@ -75,6 +76,10 @@ struct FakeUpdates {
     /// This backend knows the checkout it was built from.
     has_checkout: bool,
     finished: Mutex<Option<UpdateRun>>,
+    /// The job the running fake started.
+    job: Mutex<UpdateJob>,
+    /// A build is downloaded.
+    staged: Mutex<bool>,
 }
 
 impl FakeUpdates {
@@ -83,6 +88,20 @@ impl FakeUpdates {
             configured: true,
             ..Self::default()
         }
+    }
+
+    fn run(&self, job: UpdateJob) -> Result<UpdateStatus, SelfUpdateError> {
+        if !self.configured {
+            return Err(SelfUpdateError::NotConfigured);
+        }
+        let mut running = self.running.lock().expect("lock");
+        if *running {
+            return Err(SelfUpdateError::AlreadyRunning);
+        }
+        *running = true;
+        drop(running);
+        *self.job.lock().expect("lock") = job;
+        Ok(self.snapshot())
     }
 
     fn calls(&self) -> Vec<&'static str> {
@@ -95,6 +114,7 @@ impl FakeUpdates {
             Some(run) => run,
             None if running => UpdateRun {
                 state: UpdateRunState::Running,
+                job: *self.job.lock().expect("lock"),
                 started_at: Some(Utc.with_ymd_and_hms(2026, 11, 8, 21, 0, 0).unwrap()),
                 message: Some("Starting".into()),
                 ..UpdateRun::default()
@@ -116,6 +136,10 @@ impl FakeUpdates {
             },
             available: None,
             last_run,
+            staged: (*self.staged.lock().expect("lock")).then(|| StagedUpdate {
+                commit: "bbbb".into(),
+                staged_at: Utc.with_ymd_and_hms(2026, 11, 8, 20, 0, 0).unwrap(),
+            }),
         }
     }
 }
@@ -139,16 +163,20 @@ impl SelfUpdateService for FakeUpdates {
 
     async fn start(&self) -> Result<UpdateStatus, SelfUpdateError> {
         self.calls.lock().expect("lock").push("start");
-        if !self.configured {
-            return Err(SelfUpdateError::NotConfigured);
+        self.run(UpdateJob::Update)
+    }
+
+    async fn download(&self) -> Result<UpdateStatus, SelfUpdateError> {
+        self.calls.lock().expect("lock").push("download");
+        self.run(UpdateJob::Download)
+    }
+
+    async fn install(&self) -> Result<UpdateStatus, SelfUpdateError> {
+        self.calls.lock().expect("lock").push("install");
+        if !*self.staged.lock().expect("lock") {
+            return Err(SelfUpdateError::NothingStaged);
         }
-        let mut running = self.running.lock().expect("lock");
-        if *running {
-            return Err(SelfUpdateError::AlreadyRunning);
-        }
-        *running = true;
-        drop(running);
-        Ok(self.snapshot())
+        self.run(UpdateJob::Install)
     }
 
     async fn enable(&self) -> Result<UpdateStatus, SelfUpdateError> {
@@ -217,6 +245,8 @@ async fn every_route_is_operator_only() {
         (Method::GET, OPERATOR_UPDATE_PATH),
         (Method::POST, OPERATOR_UPDATE_PATH),
         (Method::POST, OPERATOR_UPDATE_CHECK_PATH),
+        (Method::POST, OPERATOR_UPDATE_DOWNLOAD_PATH),
+        (Method::POST, OPERATOR_UPDATE_INSTALL_PATH),
         (Method::POST, OPERATOR_UPDATE_ENABLE_PATH),
         (Method::POST, OPERATOR_UPDATE_DISABLE_PATH),
     ] {
@@ -268,6 +298,56 @@ async fn start_answers_202_and_a_second_start_is_refused_while_one_runs() {
 }
 
 #[tokio::test]
+async fn download_answers_202_and_install_needs_a_downloaded_build() {
+    let service = Arc::new(FakeUpdates::configured());
+    let app = app(Arc::clone(&service));
+    let (status, body) = send(
+        &app,
+        request(
+            Method::POST,
+            OPERATOR_UPDATE_INSTALL_PATH,
+            Some(OPERATOR),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"], "nothing_staged");
+
+    let (status, body) = send(
+        &app,
+        request(
+            Method::POST,
+            OPERATOR_UPDATE_DOWNLOAD_PATH,
+            Some(OPERATOR),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(body["last_run"]["job"], "download");
+    assert_eq!(body["staged"], Value::Null);
+
+    // The download finished: the build waits, and install starts.
+    *service.running.lock().expect("lock") = false;
+    *service.staged.lock().expect("lock") = true;
+    let (status, body) = send(
+        &app,
+        request(
+            Method::POST,
+            OPERATOR_UPDATE_INSTALL_PATH,
+            Some(OPERATOR),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(body["last_run"]["job"], "install");
+    assert_eq!(body["staged"]["commit"], "bbbb");
+    assert_eq!(service.calls(), vec!["install", "download", "install"]);
+}
+
+#[tokio::test]
 async fn a_finished_job_reads_back_after_the_restart() {
     let service = Arc::new(FakeUpdates::configured());
     *service.finished.lock().expect("lock") = Some(UpdateRun {
@@ -276,6 +356,7 @@ async fn a_finished_job_reads_back_after_the_restart() {
         finished_at: Some(Utc.with_ymd_and_hms(2026, 11, 8, 21, 9, 0).unwrap()),
         message: Some("Updated to bbbb; IronClaw restarted.".into()),
         log_tail: "Finished release".into(),
+        ..UpdateRun::default()
     });
     let (status, body) = send(
         &app(service),

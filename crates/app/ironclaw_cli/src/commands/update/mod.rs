@@ -22,7 +22,9 @@
 //!   start is refused and `--json` shows it at once.
 //!
 //! The backend runs the same job detached for `POST /api/operator/update`
-//! (`job.rs`); its records live under `<reborn_home>/update/`
+//! (`job.rs`), and its two halves for `POST /api/operator/update/download`
+//! (build the new version into a staging folder, install nothing) and
+//! `POST /api/operator/update/install` (swap the staged build in, restart); its records live under `<reborn_home>/update/`
 //! (`records.rs`). Everything comes from local config: the HTTP routes take
 //! no input at all.
 
@@ -41,7 +43,7 @@ use ironclaw_config::{
     RebornConfigFile, SourceUpdateSettings, UpdateMethodSetting, UpdateSection,
     write_update_section,
 };
-use ironclaw_product_contracts::self_update::{BuildInfo, UpdateMethod, UpdateStatus};
+use ironclaw_product_contracts::self_update::{BuildInfo, UpdateJob, UpdateMethod, UpdateStatus};
 
 use crate::context::RebornCliContext;
 
@@ -95,6 +97,25 @@ pub(crate) struct UpdateCommand {
     /// backend to its own path).
     #[arg(long, hide = true, requires = "run_job")]
     install_path: Option<PathBuf>,
+    /// What the detached job does (internal; default: the whole update).
+    #[arg(long, hide = true, requires = "run_job", value_enum)]
+    job: Option<JobArg>,
+}
+
+/// `--job` (`job::job_flag` writes it).
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum JobArg {
+    Download,
+    Install,
+}
+
+impl From<JobArg> for UpdateJob {
+    fn from(arg: JobArg) -> Self {
+        match arg {
+            JobArg::Download => Self::Download,
+            JobArg::Install => Self::Install,
+        }
+    }
 }
 
 /// The build this process is.
@@ -283,6 +304,7 @@ impl UpdateCommand {
             job::run_locked(
                 &lock,
                 job::JobInput {
+                    job: self.job.map_or(UpdateJob::Update, UpdateJob::from),
                     paths: &paths,
                     settings: &settings,
                     running_commit: build.commit.as_deref(),
@@ -361,6 +383,7 @@ impl UpdateCommand {
         let json = self.json;
         let outcome = job::run_job(
             job::JobInput {
+                job: UpdateJob::Update,
                 paths: &paths,
                 settings: &settings,
                 running_commit: build.commit.as_deref(),
@@ -408,10 +431,10 @@ impl UpdateCommand {
     ) -> anyhow::Result<()> {
         // Published before returning, so a second `zlo update` (or the
         // app's button) is refused and `--json` shows this run.
-        if records::reserve(paths)? == records::Reservation::AlreadyRunning {
+        if records::reserve(paths, UpdateJob::Update)? == records::Reservation::AlreadyRunning {
             anyhow::bail!("another update is already running");
         }
-        if let Err(error) = job::spawn_detached(paths, exe, home) {
+        if let Err(error) = job::spawn_detached(UpdateJob::Update, paths, exe, home) {
             records::reservation_failed(
                 paths,
                 &format!("The update job could not be started: {error:#}"),

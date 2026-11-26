@@ -1,5 +1,6 @@
 //! The backend's [`SelfUpdateService`]: status from the records on disk,
-//! a check that fetches and records, a start that spawns the detached job,
+//! a check that fetches and records, a start (whole update, download or
+//! install) that spawns the detached job,
 //! and turning self-update on from the checkout this binary was built from.
 //! Wired into `zlo serve` by `serve.rs`, which also runs [`auto_check`].
 //!
@@ -14,7 +15,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::Utc;
 use ironclaw_config::{RebornConfigFile, SourceUpdateSettings};
-use ironclaw_product_contracts::self_update::{BuildInfo, UpdateMethod, UpdateStatus};
+use ironclaw_product_contracts::self_update::{BuildInfo, UpdateJob, UpdateMethod, UpdateStatus};
 use ironclaw_webui::{SelfUpdateError, SelfUpdateService};
 
 use super::git::{Checkout, GitRefusal, Scope};
@@ -29,7 +30,7 @@ const CHECK_EVERY: Duration = Duration::from_secs(120);
 /// Starts the detached job. The production spawner copies the running
 /// binary and launches it (`job::spawn_detached`); tests record instead.
 pub(crate) trait JobSpawner: Send + Sync {
-    fn spawn(&self, paths: &UpdatePaths) -> anyhow::Result<()>;
+    fn spawn(&self, job: UpdateJob, paths: &UpdatePaths) -> anyhow::Result<()>;
 }
 
 /// Launches `<running binary> update --run-job --install-path <running binary>`.
@@ -39,8 +40,8 @@ struct DetachedSpawner {
 }
 
 impl JobSpawner for DetachedSpawner {
-    fn spawn(&self, paths: &UpdatePaths) -> anyhow::Result<()> {
-        job::spawn_detached(paths, &self.exe, &self.reborn_home)
+    fn spawn(&self, job: UpdateJob, paths: &UpdatePaths) -> anyhow::Result<()> {
+        job::spawn_detached(job, paths, &self.exe, &self.reborn_home)
     }
 }
 
@@ -186,6 +187,10 @@ impl SourceSelfUpdate {
             available,
             last_run: records::last_run(&self.paths, locked, Utc::now())?,
             can_enable: !configured && self.can_enable(),
+            // A build of what already runs is nothing to install.
+            staged: records::read_staged(&self.paths)?
+                .filter(|_| configured)
+                .filter(|staged| self.build.commit.as_deref() != Some(staged.commit.as_str())),
         })
     }
 
@@ -227,17 +232,26 @@ impl SourceSelfUpdate {
         Ok((self.status_blocking()?, outcome.not_for_this_install))
     }
 
-    fn start_blocking(&self) -> Result<UpdateStatus, SelfUpdateError> {
+    fn start_blocking(&self, job: UpdateJob) -> Result<UpdateStatus, SelfUpdateError> {
         if !self.configured() {
             return Err(SelfUpdateError::NotConfigured);
         }
         let spawner = self.spawner.as_ref().ok_or(SelfUpdateError::Unavailable)?;
-        if records::reserve(&self.paths).map_err(unavailable)?
+        if job == UpdateJob::Install
+            && self
+                .status_blocking()
+                .map_err(unavailable)?
+                .staged
+                .is_none()
+        {
+            return Err(SelfUpdateError::NothingStaged);
+        }
+        if records::reserve(&self.paths, job).map_err(unavailable)?
             == records::Reservation::AlreadyRunning
         {
             return Err(SelfUpdateError::AlreadyRunning);
         }
-        if let Err(error) = spawner.spawn(&self.paths) {
+        if let Err(error) = spawner.spawn(job, &self.paths) {
             tracing::error!(target: "ironclaw::reborn::cli::update", error = %format!("{error:#}"), "update job did not start");
             records::reservation_failed(
                 &self.paths,
@@ -376,7 +390,17 @@ impl SelfUpdateService for SelfUpdateRoutes {
 
     async fn start(&self) -> Result<UpdateStatus, SelfUpdateError> {
         let _guard = self.0.starting.lock().await;
-        blocking(&self.0, SourceSelfUpdate::start_blocking).await
+        blocking(&self.0, |s| s.start_blocking(UpdateJob::Update)).await
+    }
+
+    async fn download(&self) -> Result<UpdateStatus, SelfUpdateError> {
+        let _guard = self.0.starting.lock().await;
+        blocking(&self.0, |s| s.start_blocking(UpdateJob::Download)).await
+    }
+
+    async fn install(&self) -> Result<UpdateStatus, SelfUpdateError> {
+        let _guard = self.0.starting.lock().await;
+        blocking(&self.0, |s| s.start_blocking(UpdateJob::Install)).await
     }
 
     async fn enable(&self) -> Result<UpdateStatus, SelfUpdateError> {
@@ -417,12 +441,14 @@ mod tests {
     #[derive(Default)]
     struct RecordingSpawner {
         spawned: Mutex<u32>,
+        jobs: Mutex<Vec<UpdateJob>>,
         fail: bool,
     }
 
     impl JobSpawner for RecordingSpawner {
-        fn spawn(&self, _paths: &UpdatePaths) -> anyhow::Result<()> {
+        fn spawn(&self, job: UpdateJob, _paths: &UpdatePaths) -> anyhow::Result<()> {
             *self.spawned.lock().expect("lock") += 1;
+            self.jobs.lock().expect("lock").push(job);
             if self.fail {
                 anyhow::bail!("exec failed");
             }
@@ -493,6 +519,73 @@ mod tests {
             SelfUpdateError::AlreadyRunning
         );
         assert_eq!(*spawner.spawned.lock().expect("lock"), 1);
+    }
+
+    #[tokio::test]
+    async fn download_then_install_through_the_port() {
+        let home = tempfile::tempdir().expect("home");
+        let paths = UpdatePaths::new(home.path());
+        let spawner = Arc::new(RecordingSpawner::default());
+        let running = "a".repeat(40);
+        let routes = SelfUpdateRoutes(Arc::new(SourceSelfUpdate::with_spawner(
+            home.path(),
+            Some(SourceUpdateSettings {
+                repo: home.path().to_path_buf(),
+                branch: None,
+            }),
+            build(Some(running.clone())),
+            spawner.clone(),
+        )));
+
+        // Nothing downloaded: install is refused before anything starts.
+        assert_eq!(routes.status().await.expect("status").staged, None);
+        assert_eq!(
+            routes.install().await.expect_err("nothing staged"),
+            SelfUpdateError::NothingStaged
+        );
+        assert_eq!(*spawner.spawned.lock().expect("lock"), 0);
+
+        let started = routes.download().await.expect("download");
+        assert_eq!(started.last_run.state, UpdateRunState::Running);
+        assert_eq!(started.last_run.job, UpdateJob::Download);
+        // The download job finishes and leaves its build.
+        let tip = "b".repeat(40);
+        std::fs::create_dir_all(paths.staged_dir().join("ZLO.app")).expect("build");
+        records::write_staged(
+            &paths,
+            &ironclaw_product_contracts::self_update::StagedUpdate {
+                commit: tip.clone(),
+                staged_at: Utc::now(),
+            },
+        )
+        .expect("staged");
+        records::write_run(
+            &paths,
+            &RunRecord::running("Building")
+                .for_job(UpdateJob::Download)
+                .finish(UpdateRunState::Succeeded, "Downloaded".into()),
+        )
+        .expect("done");
+        let status = routes.status().await.expect("status");
+        assert_eq!(status.staged.map(|s| s.commit), Some(tip.clone()));
+
+        let installing = routes.install().await.expect("install");
+        assert_eq!(installing.last_run.job, UpdateJob::Install);
+        assert_eq!(
+            *spawner.jobs.lock().expect("lock"),
+            vec![UpdateJob::Download, UpdateJob::Install]
+        );
+
+        // A staged build of what already runs is not offered.
+        records::write_staged(
+            &paths,
+            &ironclaw_product_contracts::self_update::StagedUpdate {
+                commit: running,
+                staged_at: Utc::now(),
+            },
+        )
+        .expect("staged");
+        assert_eq!(routes.status().await.expect("status").staged, None);
     }
 
     #[tokio::test]

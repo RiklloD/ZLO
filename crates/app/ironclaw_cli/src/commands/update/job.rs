@@ -1,5 +1,13 @@
-//! One update job: lock, fetch, fast-forward, rebuild the way this host is
-//! installed, restart, and record the outcome in `run.json`.
+//! One update job, and the outcome it records in `run.json`. Three kinds
+//! ([`UpdateJob`]):
+//!
+//! - `update`: lock, fetch, fast-forward, build into the staging folder,
+//!   install from it, restart — all in one go (`zlo update`, older clients).
+//! - `download`: the same up to the build, then stop: the new version
+//!   waits in `<reborn_home>/update/staged/` (`staged.json` names its
+//!   commit) while the running one keeps going.
+//! - `install`: install the staged build and restart. No fetch, no build:
+//!   this is the quick "restart to install" step.
 //!
 //! The job outlives the backend that starts it. The backend copies its own
 //! binary to `<reborn_home>/update/zlo-updater` and runs
@@ -28,13 +36,17 @@ use std::process::{Command, Stdio};
 
 use anyhow::Context as _;
 use ironclaw_config::{REBORN_HOME_ENV, REBORN_PROFILE_ENV, SourceUpdateSettings};
-use ironclaw_product_contracts::self_update::UpdateRunState;
+use ironclaw_product_contracts::self_update::{StagedUpdate, UpdateJob, UpdateRunState};
 
 use super::git::{Checkout, Scope};
 use super::records::{self, RunRecord, UpdatePaths};
 
 /// Where `cargo build --release -p ironclaw --bin zlo` leaves the binary.
 const BUILT_BINARY: &str = "target/release/zlo";
+/// Where `bundle.sh --no-install` leaves the app.
+const BUILT_APP: &str = "tools/ironclaw_rune/target/ZLO.app";
+/// The script that swaps a built ZLO.app in (quit, replace, reopen).
+const INSTALL_APP_SCRIPT: &str = "tools/ironclaw_rune/install_app.sh";
 
 /// How this host runs IronClaw, read from the backend binary's path.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,14 +121,26 @@ pub(crate) enum Restarted {
 }
 
 /// The side-effecting half of a job. The production impl runs `cargo` /
-/// `bundle.sh`, replaces the binary and restarts the service; tests record.
+/// `bundle.sh`, replaces the binary or app and restarts the service; tests
+/// record.
 pub(crate) trait UpdateHost {
-    /// Build from `repo` and install over `kind`, writing tool output to
-    /// `log`.
-    fn build_and_install(
+    /// Build from `repo` into `staging` (an empty folder), writing tool
+    /// output to `log`. Installs nothing: the running version keeps going.
+    fn build_staged(
         &self,
         kind: &InstallKind,
         repo: &Path,
+        staging: &Path,
+        log: &std::fs::File,
+    ) -> anyhow::Result<()>;
+
+    /// Install the build [`Self::build_staged`] left in `staging` over
+    /// `kind`.
+    fn install_staged(
+        &self,
+        kind: &InstallKind,
+        repo: &Path,
+        staging: &Path,
         log: &std::fs::File,
     ) -> anyhow::Result<()>;
 
@@ -126,6 +150,7 @@ pub(crate) trait UpdateHost {
 
 /// Everything one job needs, all from local config and the process itself.
 pub(crate) struct JobInput<'a> {
+    pub job: UpdateJob,
     pub paths: &'a UpdatePaths,
     pub settings: &'a SourceUpdateSettings,
     /// The commit the running build came from, when known.
@@ -160,7 +185,11 @@ pub(crate) fn run_locked(
     progress: &mut dyn FnMut(&str),
 ) -> anyhow::Result<RunRecord> {
     let mut log = records::fresh_log(input.paths)?;
-    let mut record = RunRecord::running("Fetching the source");
+    let first = match input.job {
+        UpdateJob::Install => "Installing the downloaded update",
+        UpdateJob::Update | UpdateJob::Download => "Fetching the source",
+    };
+    let mut record = RunRecord::running(first).for_job(input.job);
     let mut step = |record: &mut RunRecord, message: &str, log: &mut std::fs::File| {
         record.message = Some(message.to_string());
         if let Err(error) = writeln!(log, "== {message}") {
@@ -169,7 +198,7 @@ pub(crate) fn run_locked(
         progress(message);
         records::write_run(input.paths, record)
     };
-    step(&mut record, "Fetching the source", &mut log)?;
+    step(&mut record, first, &mut log)?;
     let outcome = steps(&input, host, &mut record, &mut log, &mut step);
     let finished = match outcome {
         Ok(message) => record.finish(UpdateRunState::Succeeded, message),
@@ -194,6 +223,47 @@ fn steps(
     log: &mut std::fs::File,
     step: &mut Step<'_>,
 ) -> anyhow::Result<String> {
+    match input.job {
+        UpdateJob::Install => return install(input, host, record, log, step),
+        UpdateJob::Update | UpdateJob::Download => {}
+    }
+    let head = match fetch(input)? {
+        Fetched::Nothing(message) => {
+            // The running build is as new as the source: a staged build
+            // has nothing left to give.
+            records::clear_staged(input.paths)?;
+            return Ok(message);
+        }
+        Fetched::Build(head) => head,
+    };
+    let short = short(&head);
+    if input.job == UpdateJob::Download
+        && records::read_staged(input.paths)?.is_some_and(|staged| staged.commit == head)
+    {
+        return Ok(format!("{short} is downloaded. Restart to install it."));
+    }
+    step(
+        record,
+        &format!("Building {short} (this takes a few minutes)"),
+        log,
+    )?;
+    stage(input, host, &head, log)
+        .map_err(|e| anyhow::anyhow!("The build failed: {e:#}. See the log."))?;
+    if input.job == UpdateJob::Download {
+        return Ok(format!("Downloaded {short}. Restart to install it."));
+    }
+    install(input, host, record, log, step)
+}
+
+/// What the fetch found.
+enum Fetched {
+    /// Nothing to build; the outcome line.
+    Nothing(String),
+    /// The fast-forwarded head, which this computer needs built.
+    Build(String),
+}
+
+fn fetch(input: &JobInput<'_>) -> anyhow::Result<Fetched> {
     let checkout = Checkout::open(&input.settings.repo).map_err(anyhow::Error::new)?;
     let tracking = checkout
         .tracking(input.settings.branch.as_deref())
@@ -204,7 +274,7 @@ fn steps(
         .map_err(anyhow::Error::new)?;
     let short = short(&head);
     if input.running_commit == Some(head.as_str()) {
-        return Ok(format!("Already up to date ({short})."));
+        return Ok(Fetched::Nothing(format!("Already up to date ({short}).")));
     }
     // New commits that change nothing this computer runs (the app's sources
     // on a plain backend, docs anywhere): no rebuild, no restart.
@@ -213,18 +283,61 @@ fn steps(
             .changes_install(input.install.scope(), running, &head)
             .map_err(anyhow::Error::new)?
     {
-        return Ok(format!(
+        return Ok(Fetched::Nothing(format!(
             "Up to date: nothing new for this computer (source is at {short})."
-        ));
+        )));
     }
-    step(
-        record,
-        &format!("Building {short} (this takes a few minutes)"),
+    Ok(Fetched::Build(head))
+}
+
+/// Build `head` into a fresh staging folder and record it there. The old
+/// staged build (if any) is forgotten first, so a failed build never leaves
+/// a record naming a half-built folder.
+fn stage(
+    input: &JobInput<'_>,
+    host: &dyn UpdateHost,
+    head: &str,
+    log: &std::fs::File,
+) -> anyhow::Result<()> {
+    records::clear_staged(input.paths)?;
+    let staging = input.paths.staged_dir();
+    std::fs::create_dir_all(&staging).with_context(|| format!("create {}", staging.display()))?;
+    host.build_staged(&input.install, &input.settings.repo, &staging, log)?;
+    records::write_staged(
+        input.paths,
+        &StagedUpdate {
+            commit: head.to_string(),
+            staged_at: chrono::Utc::now(),
+        },
+    )
+}
+
+/// Install the staged build and restart.
+fn install(
+    input: &JobInput<'_>,
+    host: &dyn UpdateHost,
+    record: &mut RunRecord,
+    log: &mut std::fs::File,
+    step: &mut Step<'_>,
+) -> anyhow::Result<String> {
+    let Some(staged) = records::read_staged(input.paths)? else {
+        anyhow::bail!("Nothing is downloaded to install. Download the update first.");
+    };
+    let short = short(&staged.commit).to_string();
+    if input.running_commit == Some(staged.commit.as_str()) {
+        records::clear_staged(input.paths)?;
+        return Ok(format!("Already running {short}."));
+    }
+    step(record, &format!("Installing {short}; restarting"), log)?;
+    host.install_staged(
+        &input.install,
+        &input.settings.repo,
+        &input.paths.staged_dir(),
         log,
-    )?;
-    host.build_and_install(&input.install, &input.settings.repo, log)
-        .map_err(|e| anyhow::anyhow!("The build or install failed: {e:#}. See the log."))?;
-    step(record, &format!("Installed {short}; restarting"), log)?;
+    )
+    .map_err(|e| anyhow::anyhow!("Installing {short} failed: {e:#}. See the log."))?;
+    // Installed: the staged copy is spent (the install copied it).
+    records::clear_staged(input.paths)?;
     let restarted = host
         .restart(&input.install)
         .map_err(|e| anyhow::anyhow!("Installed {short}, but the restart failed: {e:#}"))?;
@@ -254,6 +367,7 @@ pub(crate) struct DetachedCommand {
 }
 
 pub(crate) fn detached_command(
+    job: UpdateJob,
     updater: &Path,
     install_path: &Path,
     reborn_home: &Path,
@@ -267,12 +381,16 @@ pub(crate) fn detached_command(
     if let Some(profile) = profile {
         env.push((REBORN_PROFILE_ENV.to_string(), profile));
     }
-    let job_args: Vec<OsString> = vec![
+    let mut job_args: Vec<OsString> = vec![
         "update".into(),
         "--run-job".into(),
         "--install-path".into(),
         install_path.as_os_str().to_owned(),
     ];
+    // A full update keeps the command line older updaters understand.
+    if let Some(kind) = job_flag(job) {
+        job_args.extend(["--job".into(), kind.into()]);
+    }
     if under_systemd {
         // A unit of its own, so restarting the backend's unit (whose
         // default KillMode stops its whole cgroup) does not stop the job.
@@ -302,8 +420,18 @@ pub(crate) fn detached_command(
     }
 }
 
+/// `--job`'s value for `job`, `None` for a full update (the default).
+pub(crate) fn job_flag(job: UpdateJob) -> Option<&'static str> {
+    match job {
+        UpdateJob::Update => None,
+        UpdateJob::Download => Some("download"),
+        UpdateJob::Install => Some("install"),
+    }
+}
+
 /// Copy `exe` to the updater path (atomically) and start the job detached.
 pub(crate) fn spawn_detached(
+    job: UpdateJob,
     paths: &UpdatePaths,
     exe: &Path,
     reborn_home: &Path,
@@ -313,6 +441,7 @@ pub(crate) fn spawn_detached(
     copy_executable(exe, &updater)?;
     let under_systemd = cfg!(target_os = "linux") && std::env::var_os("INVOCATION_ID").is_some();
     let spec = detached_command(
+        job,
         &updater,
         exe,
         reborn_home,
@@ -473,10 +602,11 @@ fn run_checked(mut command: Command, what: &str) -> anyhow::Result<()> {
 }
 
 impl UpdateHost for SystemUpdateHost {
-    fn build_and_install(
+    fn build_staged(
         &self,
         kind: &InstallKind,
         repo: &Path,
+        staging: &Path,
         log: &std::fs::File,
     ) -> anyhow::Result<()> {
         match kind {
@@ -485,16 +615,54 @@ impl UpdateHost for SystemUpdateHost {
                     anyhow::bail!("{} is missing from the checkout", bundle_script.display());
                 }
                 let mut command = Self::command("/bin/sh", repo, log)?;
-                command.arg(bundle_script);
+                command.arg(bundle_script).arg("--no-install");
                 command.envs(bundle_env(app, signed_adhoc(app)));
-                run_checked(command, "bundle.sh")
+                run_checked(command, "bundle.sh")?;
+                // A copy of its own: a later build in the checkout must not
+                // change what waits to be installed. `ditto` keeps the
+                // signature intact.
+                let mut copy = Self::command("/usr/bin/ditto", repo, log)?;
+                copy.arg(repo.join(BUILT_APP)).arg(staging.join("ZLO.app"));
+                run_checked(copy, "ditto")
             }
             InstallKind::Binary { target } => {
                 refuse_symlinked_binary(target)?;
                 let mut command = Self::command("cargo", repo, log)?;
                 command.args(["build", "--release", "-p", "ironclaw", "--bin", "zlo"]);
                 run_checked(command, "cargo build")?;
-                copy_executable(&repo.join(BUILT_BINARY), target)
+                copy_executable(&repo.join(BUILT_BINARY), &staging.join("zlo"))
+            }
+        }
+    }
+
+    fn install_staged(
+        &self,
+        kind: &InstallKind,
+        repo: &Path,
+        staging: &Path,
+        log: &std::fs::File,
+    ) -> anyhow::Result<()> {
+        match kind {
+            InstallKind::Zlo { app, .. } => {
+                let built = staging.join("ZLO.app");
+                if !built.is_dir() {
+                    anyhow::bail!("the downloaded app is missing ({})", built.display());
+                }
+                let script = repo.join(INSTALL_APP_SCRIPT);
+                if !script.is_file() {
+                    anyhow::bail!("{} is missing from the checkout", script.display());
+                }
+                let mut command = Self::command("/bin/sh", repo, log)?;
+                command.arg(script).arg(&built).arg(app);
+                run_checked(command, "install_app.sh")
+            }
+            InstallKind::Binary { target } => {
+                refuse_symlinked_binary(target)?;
+                let built = staging.join("zlo");
+                if !built.is_file() {
+                    anyhow::bail!("the downloaded binary is missing ({})", built.display());
+                }
+                copy_executable(&built, target)
             }
         }
     }
@@ -523,15 +691,18 @@ mod tests {
     #[derive(Default)]
     struct RecordingHost {
         builds: RefCell<Vec<InstallKind>>,
+        /// What each install found in the staging folder.
+        installs: RefCell<Vec<Vec<u8>>>,
         fail_build: bool,
         restarted: Option<Restarted>,
     }
 
     impl UpdateHost for RecordingHost {
-        fn build_and_install(
+        fn build_staged(
             &self,
             kind: &InstallKind,
             _repo: &Path,
+            staging: &Path,
             log: &std::fs::File,
         ) -> anyhow::Result<()> {
             self.builds.borrow_mut().push(kind.clone());
@@ -539,6 +710,21 @@ mod tests {
             if self.fail_build {
                 anyhow::bail!("cargo build exited with exit status: 101");
             }
+            let n = self.builds.borrow().len();
+            std::fs::write(staging.join("zlo"), format!("build {n}"))?;
+            Ok(())
+        }
+
+        fn install_staged(
+            &self,
+            _kind: &InstallKind,
+            _repo: &Path,
+            staging: &Path,
+            _log: &std::fs::File,
+        ) -> anyhow::Result<()> {
+            self.installs
+                .borrow_mut()
+                .push(std::fs::read(staging.join("zlo"))?);
             Ok(())
         }
 
@@ -623,14 +809,18 @@ mod tests {
         assert!(refused.to_string().contains("is a symlink"), "{refused}");
         // And the refusal comes before any build: nothing was run or replaced.
         let log = tempfile::tempfile().expect("log");
+        let kind = InstallKind::Binary {
+            target: link.clone(),
+        };
         let err = SystemUpdateHost
-            .build_and_install(
-                &InstallKind::Binary {
-                    target: link.clone(),
-                },
-                dir.path(),
-                &log,
-            )
+            .build_staged(&kind, dir.path(), dir.path(), &log)
+            .expect_err("refused");
+        assert!(err.to_string().contains("is a symlink"), "{err}");
+        let staging = dir.path().join("staged");
+        std::fs::create_dir_all(&staging).expect("staging");
+        std::fs::write(staging.join("zlo"), b"new").expect("staged");
+        let err = SystemUpdateHost
+            .install_staged(&kind, dir.path(), &staging, &log)
             .expect_err("refused");
         assert!(err.to_string().contains("is a symlink"), "{err}");
         assert!(
@@ -673,6 +863,7 @@ mod tests {
         let mut steps = Vec::new();
         let record = run_job(
             JobInput {
+                job: UpdateJob::Update,
                 paths: &paths,
                 settings: &settings,
                 running_commit: Some(&built),
@@ -690,6 +881,12 @@ mod tests {
             "{message}"
         );
         assert_eq!(*host.builds.borrow(), vec![binary()]);
+        assert_eq!(*host.installs.borrow(), vec![b"build 1".to_vec()]);
+        assert_eq!(
+            records::read_staged(&paths).expect("staged"),
+            None,
+            "a full update leaves nothing staged"
+        );
         assert_eq!(
             super::super::git::tests::sh(&r.checkout, &["rev-parse", "HEAD"]),
             tip
@@ -701,6 +898,148 @@ mod tests {
                 .contains("Finished `release` profile")
         );
         assert!(steps.iter().any(|s| s.starts_with("Building")), "{steps:?}");
+    }
+
+    #[test]
+    fn a_download_builds_without_installing_and_install_swaps_it_in() {
+        let r = repos();
+        let built = super::super::git::tests::sh(&r.checkout, &["rev-parse", "HEAD"]);
+        let tip = push_upstream(&r, &["New feature"]);
+        let home = tempfile::tempdir().expect("home");
+        let paths = UpdatePaths::new(home.path());
+        let settings = SourceUpdateSettings {
+            repo: r.checkout.clone(),
+            branch: None,
+        };
+        let host = RecordingHost {
+            restarted: Some(Restarted::ByZlo),
+            ..Default::default()
+        };
+        let run = |job: UpdateJob| {
+            run_job(
+                JobInput {
+                    job,
+                    paths: &paths,
+                    settings: &settings,
+                    running_commit: Some(&built),
+                    install: binary(),
+                },
+                &host,
+                &mut |_| {},
+            )
+            .expect("runs")
+            .expect("not locked")
+        };
+
+        // Install before anything is downloaded: refused, nothing touched.
+        let early = run(UpdateJob::Install);
+        assert_eq!(early.state, UpdateRunState::Failed);
+        assert_eq!(early.job, UpdateJob::Install);
+        assert!(
+            early
+                .message
+                .expect("message")
+                .contains("Nothing is downloaded"),
+            "says why"
+        );
+        assert!(host.installs.borrow().is_empty());
+
+        // Download: built and staged, nothing installed or restarted.
+        let downloaded = run(UpdateJob::Download);
+        assert_eq!(downloaded.state, UpdateRunState::Succeeded);
+        assert_eq!(downloaded.job, UpdateJob::Download);
+        assert!(
+            downloaded
+                .message
+                .expect("message")
+                .contains("Restart to install"),
+        );
+        assert_eq!(host.builds.borrow().len(), 1);
+        assert!(host.installs.borrow().is_empty(), "nothing installed yet");
+        let staged = records::read_staged(&paths).expect("read").expect("staged");
+        assert_eq!(staged.commit, tip);
+
+        // A second download of the same commit builds nothing.
+        let again = run(UpdateJob::Download);
+        assert!(again.message.expect("message").contains("is downloaded"));
+        assert_eq!(host.builds.borrow().len(), 1, "not rebuilt");
+
+        // Install: the staged build goes in, then the restart.
+        let installed = run(UpdateJob::Install);
+        assert_eq!(installed.state, UpdateRunState::Succeeded);
+        assert_eq!(installed.job, UpdateJob::Install);
+        let message = installed.message.expect("message");
+        assert!(
+            message.contains(short(&tip)) && message.contains("ZLO reopened"),
+            "{message}"
+        );
+        assert_eq!(*host.installs.borrow(), vec![b"build 1".to_vec()]);
+        assert_eq!(host.builds.borrow().len(), 1, "install builds nothing");
+        assert_eq!(records::read_staged(&paths).expect("read"), None, "spent");
+    }
+
+    #[test]
+    fn a_failed_download_leaves_no_staged_build_and_an_up_to_date_one_drops_it() {
+        let r = repos();
+        let built = super::super::git::tests::sh(&r.checkout, &["rev-parse", "HEAD"]);
+        let tip = push_upstream(&r, &["New feature"]);
+        let home = tempfile::tempdir().expect("home");
+        let paths = UpdatePaths::new(home.path());
+        let settings = SourceUpdateSettings {
+            repo: r.checkout.clone(),
+            branch: None,
+        };
+        fn download<'a>(
+            paths: &'a UpdatePaths,
+            settings: &'a SourceUpdateSettings,
+            running: &'a str,
+        ) -> JobInput<'a> {
+            JobInput {
+                job: UpdateJob::Download,
+                paths,
+                settings,
+                running_commit: Some(running),
+                install: binary(),
+            }
+        }
+        let input = |running| download(&paths, &settings, running);
+        // An older staged build is replaced, not kept, when the build fails.
+        std::fs::create_dir_all(paths.staged_dir()).expect("dir");
+        records::write_staged(
+            &paths,
+            &StagedUpdate {
+                commit: "c".repeat(40),
+                staged_at: chrono::Utc::now(),
+            },
+        )
+        .expect("old staged");
+        let failing = RecordingHost {
+            fail_build: true,
+            ..Default::default()
+        };
+        let failed = run_job(input(&built), &failing, &mut |_| {})
+            .expect("runs")
+            .expect("not locked");
+        assert_eq!(failed.state, UpdateRunState::Failed);
+        assert_eq!(records::read_staged(&paths).expect("read"), None);
+
+        // Staged, then the running build catches up (installed some other
+        // way): the next download drops the staged copy.
+        let host = RecordingHost::default();
+        run_job(input(&built), &host, &mut |_| {})
+            .expect("runs")
+            .expect("not locked");
+        assert!(records::read_staged(&paths).expect("read").is_some());
+        let caught_up = run_job(input(&tip), &host, &mut |_| {})
+            .expect("runs")
+            .expect("not locked");
+        assert!(
+            caught_up
+                .message
+                .expect("message")
+                .contains("Already up to date")
+        );
+        assert_eq!(records::read_staged(&paths).expect("read"), None);
     }
 
     #[test]
@@ -716,6 +1055,7 @@ mod tests {
         let host = RecordingHost::default();
         let record = run_job(
             JobInput {
+                job: UpdateJob::Update,
                 paths: &paths,
                 settings: &settings,
                 running_commit: Some(&head),
@@ -757,6 +1097,7 @@ mod tests {
         let run = |install: InstallKind, host: &RecordingHost| {
             run_job(
                 JobInput {
+                    job: UpdateJob::Update,
                     paths: &paths,
                     settings: &settings,
                     running_commit: Some(&built),
@@ -813,6 +1154,7 @@ mod tests {
         };
         let host = RecordingHost::default();
         let input = || JobInput {
+            job: UpdateJob::Update,
             paths: &paths,
             settings: &settings,
             running_commit: None,
@@ -863,6 +1205,7 @@ mod tests {
         };
         let record = run_job(
             JobInput {
+                job: UpdateJob::Update,
                 paths: &paths,
                 settings: &settings,
                 running_commit: Some(&head),
@@ -890,6 +1233,7 @@ mod tests {
         let host = RecordingHost::default();
         let refused = run_job(
             JobInput {
+                job: UpdateJob::Update,
                 paths: &paths,
                 settings: &settings,
                 running_commit: None,
@@ -910,6 +1254,7 @@ mod tests {
     #[test]
     fn the_detached_command_carries_only_local_values() {
         let spec = detached_command(
+            UpdateJob::Update,
             Path::new("/home/me/.ironclaw/reborn/update/zlo-updater"),
             Path::new("/home/me/.ironclaw/bin/ironclaw"),
             Path::new("/home/me/.ironclaw/reborn"),
@@ -938,7 +1283,22 @@ mod tests {
             )]
         );
 
+        let download = detached_command(
+            UpdateJob::Download,
+            Path::new("/u/zlo-updater"),
+            Path::new("/u/ironclaw"),
+            Path::new("/u/home"),
+            None,
+            false,
+        );
+        assert_eq!(
+            &download.args[download.args.len() - 2..],
+            ["--job", "download"].map(OsString::from)
+        );
+        assert_eq!(job_flag(UpdateJob::Install), Some("install"));
+
         let systemd = detached_command(
+            UpdateJob::Update,
             Path::new("/u/zlo-updater"),
             Path::new("/u/ironclaw"),
             Path::new("/u/home"),
