@@ -30,6 +30,10 @@ use ironclaw_product_contracts::surface::{
     BoundProductSurface, ProductSurface, ProductSurfaceCaller, ProductSurfaceError,
     ProductSurfaceErrorCode,
 };
+use ironclaw_supermemory::{
+    SUPERMEMORY_SEARCH_DESCRIPTION, SUPERMEMORY_SEARCH_TOOL_NAME, SUPERMEMORY_WRITE_DESCRIPTION,
+    SUPERMEMORY_WRITE_TOOL_NAME, Supermemory,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -43,13 +47,23 @@ const MAX_TREE_PATHS: usize = 500;
 const SCOPE_NOTE: &str = "ZLO local memory (shared with the user's other agents; the \
                           knowledge wiki lives under wiki/, see wiki/SCHEMA.md).";
 
-pub(crate) fn register(bridge: &CliBridge, memory: Arc<dyn ProductSurface>) {
-    bridge.add_tool_provider(Arc::new(MemoryBridgeTools { memory }));
+pub(crate) fn register(
+    bridge: &CliBridge,
+    memory: Arc<dyn ProductSurface>,
+    supermemory: Option<Arc<Supermemory>>,
+) {
+    bridge.add_tool_provider(Arc::new(MemoryBridgeTools {
+        memory,
+        supermemory,
+    }));
 }
 
 struct MemoryBridgeTools {
     /// The Memory page surface.
     memory: Arc<dyn ProductSurface>,
+    /// `supermemory_search` / `supermemory_write`, answered when Supermemory
+    /// is on for the calling thread.
+    supermemory: Option<Arc<Supermemory>>,
 }
 
 #[derive(Deserialize)]
@@ -190,6 +204,52 @@ impl MemoryBridgeTools {
         }
     }
 
+    /// `supermemory_search` / `supermemory_write` as the thread, through the
+    /// thread's own binding; refused while Supermemory is off for it.
+    async fn supermemory(&self, thread: &ThreadRecord, name: &str, arguments: &Value) -> Value {
+        let Some(supermemory) = self.supermemory.as_ref() else {
+            return result(
+                format!("{name}: Supermemory is not part of this build"),
+                true,
+            );
+        };
+        let caller = crate::cli_supermemory::thread_caller(thread);
+        if !supermemory.is_active(&caller).await {
+            return result(
+                format!(
+                    "{name}: Supermemory is off for this thread (no API key in Settings → Keys, \
+                     or no container for its profile). Use memory_search / memory_write instead."
+                ),
+                true,
+            );
+        }
+        let required = if name == SUPERMEMORY_SEARCH_TOOL_NAME {
+            "query"
+        } else {
+            "content"
+        };
+        if !arguments
+            .get(required)
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+        {
+            return result(format!("{name}: {required} is required"), true);
+        }
+        let outcome = if name == SUPERMEMORY_SEARCH_TOOL_NAME {
+            ironclaw_supermemory::run_search(supermemory, &caller, arguments).await
+        } else {
+            ironclaw_supermemory::run_write(supermemory, &caller, arguments).await
+        };
+        let failed = outcome.get("ok").and_then(Value::as_bool) != Some(true);
+        match serde_json::to_string(&outcome) {
+            Ok(text) => result(text, failed),
+            Err(error) => {
+                tracing::debug!(%error, "supermemory bridge output did not encode");
+                result(format!("{name} failed"), true)
+            }
+        }
+    }
+
     async fn write(&self, surface: &BoundProductSurface, args: WriteArgs) -> Value {
         match MEMORY_WRITE_COMMAND
             .invoke_on(
@@ -242,7 +302,7 @@ fn schema(properties: Value, required: &[&str]) -> Value {
 #[async_trait]
 impl BridgeToolProvider for MemoryBridgeTools {
     fn tools(&self) -> Vec<Value> {
-        vec![
+        let mut tools = vec![
             json!({
                 "name": TREE,
                 "description": format!("List document paths in {SCOPE_NOTE}"),
@@ -278,11 +338,29 @@ impl BridgeToolProvider for MemoryBridgeTools {
                     "content_hash": {"type": "string"}
                 }), &["path", "content"]),
             }),
-        ]
+        ];
+        if self.supermemory.is_some() {
+            tools.push(json!({
+                "name": SUPERMEMORY_SEARCH_TOOL_NAME,
+                "description": SUPERMEMORY_SEARCH_DESCRIPTION,
+                "inputSchema": ironclaw_supermemory::search_schema(),
+            }));
+            tools.push(json!({
+                "name": SUPERMEMORY_WRITE_TOOL_NAME,
+                "description": SUPERMEMORY_WRITE_DESCRIPTION,
+                "inputSchema": ironclaw_supermemory::write_schema(),
+            }));
+        }
+        tools
     }
 
     fn handles(&self, name: &str) -> bool {
         matches!(name, TREE | READ | SEARCH | WRITE)
+            || (self.supermemory.is_some()
+                && matches!(
+                    name,
+                    SUPERMEMORY_SEARCH_TOOL_NAME | SUPERMEMORY_WRITE_TOOL_NAME
+                ))
     }
 
     async fn call(&self, thread: &ThreadRecord, name: &str, arguments: &Value) -> Value {
@@ -304,6 +382,9 @@ impl BridgeToolProvider for MemoryBridgeTools {
                 Ok(args) => self.write(&surface, args).await,
                 Err(error) => error,
             },
+            SUPERMEMORY_SEARCH_TOOL_NAME | SUPERMEMORY_WRITE_TOOL_NAME => {
+                self.supermemory(thread, name, arguments).await
+            }
             _ => result(format!("{name}: unknown tool"), true),
         }
     }

@@ -1296,7 +1296,7 @@ impl TurnRuntime for MuseRuntime {
         };
         let mut thread = thread.clone();
         if input.model.is_some() {
-            thread.model = input.model;
+            thread.model = input.model.clone();
         }
         let listed = self
             .skills
@@ -1307,12 +1307,8 @@ impl TurnRuntime for MuseRuntime {
         let session = self.primed.take(&thread.thread_id, listed.profile.as_ref());
         let turn = crate::context_meter::Notes::default()
             .instructions(listed.requested)
-            .then(crate::goal_notes(input.goal.as_deref()));
-        let context = session
-            .clone()
-            .unwrap_or_default()
-            .then(turn.clone())
-            .text();
+            .then(crate::input_notes(&input));
+        let context = crate::prompt_context(session.as_ref(), &turn, &input);
         // Recorded once Muse took the prompt: a failed launch keeps the
         // thread's earlier record.
         let delivery = self

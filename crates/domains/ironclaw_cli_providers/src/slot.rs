@@ -428,6 +428,7 @@ pub(crate) mod test_support {
         thread.native_session_id = created.native_session_id;
         let input = TurnInput {
             text: "hi".into(),
+            memory: None,
             origin: TurnOrigin::DelegatedBrief,
             model: None,
             goal: None,

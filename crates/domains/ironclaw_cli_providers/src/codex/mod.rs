@@ -12,7 +12,10 @@
 //! known-safe read-only commands asks first, and every request becomes an
 //! IronClaw approval through [`crate::permissions::decide`] (allow once or
 //! decline; never "for session"). Without a bridge the sandbox is
-//! read-only and nothing is asked. Codex's own subagents (`multi_agent`)
+//! read-only and nothing is asked. With a bridge, each turn also gets the
+//! bridge's loopback MCP route (orchestrator, history, memory and computer
+//! use tools) through a per-turn `config` override and token; Codex's ask
+//! before each of those calls is answered yes. Codex's own subagents (`multi_agent`)
 //! are disabled: subagents are orchestrator threads (`t3_delegate`).
 //!
 //! While a turn runs, reply and reasoning-summary deltas, tool rows with
@@ -50,6 +53,7 @@ use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, watch};
 
 use crate::bridge::CliBridge;
+use crate::bridge_tools::TurnMcpToken;
 use crate::journal;
 use crate::permissions::{self, PermissionDecision, PermissionRequest};
 use crate::rpc::{self, Inbound, RpcClient, RpcError};
@@ -314,6 +318,7 @@ impl CodexRuntime {
             kind,
             skills: Arc::clone(&self.skills),
             skill_reads: std::sync::Mutex::new(self.skills.watch(&thread.thread_id)),
+            route_granted: AtomicBool::new(false),
         };
         let idle = compact::IdleArm::new(self, thread);
         let bridge = self.bridge.clone();
@@ -568,6 +573,9 @@ struct Turn {
     skills: Arc<crate::skill_listing::CliSkills>,
     /// Which shown skills' SKILL.md this turn read.
     skill_reads: std::sync::Mutex<crate::skill_listing::SkillReadWatch>,
+    /// This turn registered ZLO's route with Codex (a token was minted and
+    /// sent): only then is a tool-call ask from `ironclaw` ZLO's own.
+    route_granted: AtomicBool,
 }
 
 type Telemetry = Option<ironclaw_orchestrator::telemetry::TurnTelemetry>;
@@ -674,7 +682,11 @@ impl Turn {
         unread: &mut Settled,
     ) -> (TurnOutcome, Telemetry) {
         let mut fold = TurnFold::default();
-        let codex_thread = match self.open(&client, &mut fold).await {
+        // The bridge's tools (orchestrator, history, memory, computer use)
+        // for this turn only: revoked when `drive` returns.
+        let mcp = TurnMcpToken::mint(self.bridge.as_ref(), &self.thread_id, &self.run_id);
+        self.route_granted.store(mcp.is_some(), Ordering::SeqCst);
+        let codex_thread = match self.open(&client, &mut fold, mcp.as_ref()).await {
             Ok(id) => id,
             Err(error) => return (open_failed(&error), None),
         };
@@ -774,7 +786,7 @@ impl Turn {
                 // The next steer. Stop's flag is looked at again where the
                 // frame is queued (under the door's lock).
                 Some(request) = steers.recv(), if !self.cancelled.load(Ordering::SeqCst) => {
-                    let input = codex_input(&request.steer.text).await;
+                    let input = codex_input(&request.steer.text, &request.steer.text).await;
                     // Fold what Codex already sent, so the cut is where its
                     // reply really stands (a bounded batch: Stop is looked
                     // at again right after).
@@ -887,7 +899,7 @@ impl Turn {
         let text = crate::with_context(&self.text, self.context.as_deref());
         let mut params = json!({
             "threadId": codex_thread,
-            "input": codex_input(&text).await,
+            "input": codex_input(&text, &self.text).await,
         });
         if let Some(model) = &self.model {
             params["model"] = json!(model);
@@ -904,7 +916,12 @@ impl Turn {
 
     /// `initialize`, then resume the saved Codex thread or start one, in
     /// the sandbox and approval policy above. Returns the Codex thread id.
-    async fn open(&self, client: &RpcClient, fold: &mut TurnFold) -> Result<String, RpcError> {
+    async fn open(
+        &self,
+        client: &RpcClient,
+        fold: &mut TurnFold,
+        mcp: Option<&TurnMcpToken>,
+    ) -> Result<String, RpcError> {
         let (id, model) = open_session(
             client,
             &self.config,
@@ -912,6 +929,7 @@ impl Turn {
             &self.cwd,
             self.model.as_deref(),
             self.policy(),
+            mcp,
         )
         .await?;
         fold.model = model;
@@ -921,6 +939,13 @@ impl Turn {
     /// Server requests: approvals go through the shared seam; everything a
     /// person would have to answer mid-turn is declined.
     fn answer_request(&self, client: &RpcClient, id: Value, method: &str, params: &Value) {
+        if self.route_granted.load(Ordering::SeqCst) && own_tool_call(method, params) {
+            let sent = client.respond(&id, json!({"action": "accept", "content": {}}));
+            if let Err(error) = sent {
+                tracing::debug!(error = %error.label(), "codex: tool-call approval not sent");
+            }
+            return;
+        }
         if plan::answer_question(
             self.bridge.as_ref(),
             client,
@@ -1036,6 +1061,7 @@ async fn open_session(
     cwd: &Path,
     model: Option<&str>,
     (approval, sandbox): (&str, &str),
+    mcp: Option<&TurnMcpToken>,
 ) -> Result<(String, Option<String>), RpcError> {
     handshake(client).await?;
     let cwd = canonical(cwd);
@@ -1048,6 +1074,9 @@ async fn open_session(
     });
     if let Some(model) = model {
         params["model"] = json!(model);
+    }
+    if let Some(mcp) = mcp {
+        params["config"] = mcp.codex_config();
     }
     let result = match &saved {
         Some(id) => {
@@ -1097,6 +1126,21 @@ async fn saved_thread(config: &CodexConfig, session: &str) -> Option<String> {
         .ok() // silent-ok: no file means the session has not started yet
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+/// Codex asks before every MCP tool call (an elicitation of kind
+/// `mcp_tool_call`). ZLO's own route (this turn's token, the thread
+/// owner's tools only, each with its own checks behind it) is answered yes,
+/// as Claude Code runs it without asking; any other server's ask is still
+/// put to the person as a question (`plan.rs`).
+fn own_tool_call(method: &str, params: &Value) -> bool {
+    method == "mcpServer/elicitation/request"
+        && params.get("serverName").and_then(Value::as_str)
+            == Some(crate::bridge_tools::CODEX_ROUTE_NAME)
+        && params["_meta"]
+            .get("codex_approval_kind")
+            .and_then(Value::as_str)
+            == Some("mcp_tool_call")
 }
 
 /// `(approval policy, sandbox)`: with a bridge to ask, the workspace
@@ -1155,9 +1199,11 @@ fn open_failed(error: &RpcError) -> TurnOutcome {
 /// The canonical path (macOS `/tmp` is `/private/tmp`).
 /// A turn's `input`: the text, then each attached picture as a data URL
 /// (T3 Code's Codex shape). The text keeps the file paths either way.
-async fn codex_input(text: &str) -> Value {
+/// The prompt as Codex reads it, with the pictures `typed` (the person's
+/// own text, never the context or recalled memory ahead of it) attaches.
+async fn codex_input(text: &str, typed: &str) -> Value {
     let mut input = vec![json!({"type": "text", "text": text, "text_elements": []})];
-    for image in crate::attachments::inline_images(text).await {
+    for image in crate::attachments::inline_images(typed).await {
         input.push(json!({"type": "image", "url": image.data_url()}));
     }
     Value::Array(input)
@@ -1237,7 +1283,7 @@ impl TurnRuntime for CodexRuntime {
         };
         let mut thread = thread.clone();
         if input.model.is_some() {
-            thread.model = input.model;
+            thread.model = input.model.clone();
         }
         let listed = self
             .skills
@@ -1248,12 +1294,8 @@ impl TurnRuntime for CodexRuntime {
         let session = self.primed.take(&thread.thread_id, listed.profile.as_ref());
         let turn = crate::context_meter::Notes::default()
             .instructions(listed.requested)
-            .then(crate::goal_notes(input.goal.as_deref()));
-        let context = session
-            .clone()
-            .unwrap_or_default()
-            .then(turn.clone())
-            .text();
+            .then(crate::input_notes(&input));
+        let context = crate::prompt_context(session.as_ref(), &turn, &input);
         // Recorded once Codex took the prompt: a failed launch keeps the
         // thread's earlier record.
         let delivery = self

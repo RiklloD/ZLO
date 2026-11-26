@@ -31,7 +31,7 @@ mod service_key;
 mod tools;
 mod wire;
 
-pub use adapters::{SupermemoryInteractionRecorder, SupermemoryPromptContext};
+pub use adapters::{SupermemoryInteractionRecorder, SupermemoryPromptContext, cli_recall_parts};
 pub use admin::{
     AdminBinding, AdminStatus, DeleteEvidence, DocumentPage, DocumentSummary, ForgetEvidence,
 };

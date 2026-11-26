@@ -110,7 +110,7 @@ pub(super) async fn run_compaction(
         let deadline = tokio::time::sleep(COMPACT_TIMEOUT);
         tokio::pin!(deadline);
         let opened = tokio::select! {
-            opened = open_session(&client, config, session, &cwd, model, session_policy(bridged)) => opened,
+            opened = open_session(&client, config, session, &cwd, model, session_policy(bridged), None) => opened,
             _ = cancelled.wait_for(|c| *c) => return Compacted::Cancelled,
         };
         let codex_thread = match opened {

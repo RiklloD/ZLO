@@ -43,6 +43,36 @@ pub(super) fn prompt_message(run_id: &str, text: &str) -> String {
     user_line(run_id, json!(text))
 }
 
+/// [`prompt_with_images`] with the turn's recalled memories as their own
+/// text block at the head (the transcript drops that block).
+pub(super) async fn prompt_with_recalled(
+    run_id: &str,
+    text: &str,
+    recalled: Option<&str>,
+) -> String {
+    let line = prompt_with_images(run_id, text).await;
+    let Some(recalled) = recalled else {
+        return line;
+    };
+    match serde_json::from_str::<serde_json::Value>(&line) {
+        Ok(mut frame) => {
+            let content = &mut frame["message"]["content"];
+            let mut blocks = match content.take() {
+                serde_json::Value::String(text) => vec![json!({"type": "text", "text": text})],
+                serde_json::Value::Array(blocks) => blocks,
+                other => vec![other],
+            };
+            blocks.insert(0, json!({"type": "text", "text": recalled}));
+            *content = json!(blocks);
+            frame.to_string()
+        }
+        Err(error) => {
+            tracing::debug!(%error, "claude cli: prompt frame unreadable; sent without memory");
+            line
+        }
+    }
+}
+
 /// [`prompt_message`] plus the attached pictures as image blocks ahead of
 /// the text (T3 Code's order), so the model sees them without a tool call.
 pub(super) async fn prompt_with_images(run_id: &str, text: &str) -> String {

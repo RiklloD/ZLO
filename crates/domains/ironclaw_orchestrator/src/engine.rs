@@ -65,6 +65,8 @@ pub struct Engine {
     pub(crate) webhook_base: OnceLock<String>,
     /// SOUL.md, folder and skills of a thread's profile for CLI turns.
     pub(crate) profile_context: OnceLock<Arc<dyn ProfileContextSource>>,
+    /// Long-term memory for CLI turns (recall in, capture out).
+    pub(crate) turn_memory: crate::turn_memory::TurnMemoryHooks,
     /// Told after every completed turn (thread titles), plugged in by the host.
     turn_listener: OnceLock<Arc<dyn TurnCompletedListener>>,
     /// Runs goal checks (`crate::goal_checks`), plugged in by the host.
@@ -160,6 +162,7 @@ impl Engine {
             schedule_planner: OnceLock::new(),
             webhook_base: OnceLock::new(),
             profile_context: OnceLock::new(),
+            turn_memory: Default::default(),
             turn_listener: OnceLock::new(),
             goal_check_runner: OnceLock::new(),
             goal_check_tasks: StdMutex::new(HashMap::new()),
@@ -195,6 +198,12 @@ impl Engine {
             reason = "first call wins by contract; a later wiring is ignored"
         )]
         let _ = self.profile_context.set(source);
+    }
+
+    /// Give CLI turns long-term memory: recalled context in, the completed
+    /// exchange out (first call wins).
+    pub fn set_turn_memory(&self, memory: Arc<dyn crate::turn_memory::TurnMemory>) {
+        self.turn_memory.set(memory);
     }
 
     /// Hear about every completed turn (first call wins).
@@ -517,6 +526,46 @@ impl Engine {
         respect_hold: bool,
         files: Vec<std::path::PathBuf>,
     ) -> Result<bool> {
+        self.deliver_inner(thread_id, text, origin, respect_hold, files, true)
+            .await
+    }
+
+    /// A queued message going out: remembered only when the person wrote it
+    /// (an agent's queued text is not their words).
+    pub(crate) async fn deliver_queued(
+        &self,
+        thread_id: &ThreadId,
+        text: String,
+        by_person: bool,
+    ) -> Result<bool> {
+        self.deliver_inner(
+            thread_id,
+            text,
+            TurnOrigin::QueueDrain,
+            true,
+            Vec::new(),
+            by_person,
+        )
+        .await
+    }
+
+    async fn deliver_inner(
+        &self,
+        thread_id: &ThreadId,
+        text: String,
+        origin: TurnOrigin,
+        respect_hold: bool,
+        files: Vec<std::path::PathBuf>,
+        remember: bool,
+    ) -> Result<bool> {
+        // Recall before the engine-wide lock: a slow memory never holds up
+        // another thread's start or Stop. Skipped for a thread that is busy
+        // now (the queue retries it every tick).
+        let memory = if remember {
+            self.recall_for(thread_id, &text, origin).await
+        } else {
+            None
+        };
         let _guard = self.dispatch.lock().await;
         if respect_hold && self.store.hold(thread_id).await?.is_some() {
             return Ok(false);
@@ -557,11 +606,14 @@ impl Engine {
             .await?
             .filter(|g| g.status == ironclaw_product_contracts::inbox::GoalStatus::Active)
             .map(|g| g.objective);
+        let memory = memory.filter(|_| !maintenance);
+        let asked = text.clone();
         let admission = runtime
             .start_turn(
                 &thread,
                 TurnInput {
                     text,
+                    memory,
                     origin,
                     model: thread.model.clone(),
                     goal,
@@ -576,6 +628,10 @@ impl Engine {
             TurnAdmission::Started { run_id } => {
                 self.mark_running(&thread, run_id.as_deref(), now_ms(), maintenance)
                     .await?;
+                if !maintenance && remember {
+                    self.turn_memory
+                        .started(thread_id, run_id.as_deref(), &asked, origin);
+                }
                 // Provenance for history search: this run's prompt is the
                 // engine's text, not the person's.
                 if origin.is_engine_scaffolding()
@@ -592,6 +648,28 @@ impl Engine {
             TurnAdmission::Steered { .. } => Ok(true),
             TurnAdmission::Busy => Ok(false),
         }
+    }
+
+    /// [`crate::turn_memory::TurnMemoryHooks::recall`] for a thread that
+    /// could start a turn now.
+    async fn recall_for(
+        &self,
+        thread_id: &ThreadId,
+        text: &str,
+        origin: TurnOrigin,
+    ) -> Option<crate::runtime::RecalledMemory> {
+        if is_maintenance_prompt(text) {
+            return None;
+        }
+        let thread = match self.store.thread(thread_id).await {
+            Ok(Some(thread)) if !thread.is_running() => thread,
+            Ok(_) => return None,
+            Err(error) => {
+                tracing::debug!(%error, "memory recall skipped: thread unreadable");
+                return None; // silent-ok: the turn's own admission reads the thread again
+            }
+        };
+        self.turn_memory.recall(&thread, text, origin).await
     }
 
     async fn mark_running(
@@ -1279,8 +1357,13 @@ impl TurnEventSink for Engine {
             Ok(Some(thread))
         }
         .await;
+        let asked = self.turn_memory.take(thread_id, run_id.as_deref());
         match result {
             Ok(Some(thread)) if completed => {
+                if let Some(asked) = asked {
+                    let answer = self.final_text(&thread, &outcome).await;
+                    self.turn_memory.capture(thread.clone(), asked, answer);
+                }
                 if let Some(listener) = self.turn_listener.get() {
                     listener.turn_completed(&thread);
                 }

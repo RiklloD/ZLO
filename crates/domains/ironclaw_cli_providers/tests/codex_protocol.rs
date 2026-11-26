@@ -158,6 +158,7 @@ async fn thread(rt: &CodexRuntime) -> ThreadRecord {
 fn input() -> TurnInput {
     TurnInput {
         text: "fix the tests".into(),
+        memory: None,
         origin: TurnOrigin::UserPrompt,
         model: None,
         goal: None,
@@ -487,4 +488,120 @@ async fn wait_finished(recorder: &Recorder, n: usize) {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     panic!("turn {n} never finished");
+}
+
+/// A Codex that, on its turn, asks to run two MCP tool calls: one on
+/// ZLO's own route, one on another server; the turn ends once both asks
+/// were answered.
+const CODEX_MCP: &str = r#"#!/bin/sh
+LOG=__LOG__
+id_of() { printf '%s' "$1" | sed -n 's/^{"id":\([0-9]*\),.*/\1/p'; }
+reply() { printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$1" "$2"; }
+emit() { printf '{"jsonrpc":"2.0","method":"%s","params":%s}\n' "$1" "$2"; }
+ask() { printf '{"jsonrpc":"2.0","id":"%s","method":"mcpServer/elicitation/request","params":{"threadId":"cx-1","turnId":"tu-1","serverName":"%s","mode":"form","_meta":{"codex_approval_kind":"mcp_tool_call","tool_name":"memory_tree"},"message":"Allow?","requestedSchema":{"type":"object","properties":{}}}}\n' "$1" "$2"; }
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$LOG"
+  id=$(id_of "$line")
+  case "$line" in
+    *'"method":"initialize"'*) reply "$id" '{"userAgent":"codex/0.172.0"}' ;;
+    *'"method":"initialized"'*) ;;
+    *'"method":"thread/start"'*|*'"method":"thread/resume"'*) reply "$id" '{"thread":{"id":"cx-1"},"model":"gpt-5.5"}' ;;
+    *'"method":"turn/start"'*)
+      reply "$id" '{"turn":{"id":"tu-1","status":"inProgress"}}'
+      ask el-1 zlo_bridge
+      ask el-2 someone-else ;;
+    *'"id":"el-2"'*)
+      emit item/completed '{"threadId":"cx-1","turnId":"tu-1","item":{"type":"agentMessage","id":"m1","text":"ok","phase":null,"memoryCitation":null,"delivery":null,"questions":null}}'
+      emit turn/completed '{"threadId":"cx-1","turn":{"id":"tu-1","status":"completed","error":null}}' ;;
+  esac
+done
+"#;
+
+#[tokio::test]
+async fn a_turn_gets_the_bridge_route_and_only_its_tool_calls_are_allowed() {
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(DEFAULT_APPROVAL_TIMEOUT);
+    bridge.set_mcp_url("http://127.0.0.1:9/mcp".into());
+    let rt = runtime(dir.path(), &recorder, Arc::clone(&bridge));
+    // Same runtime, the MCP-asking Codex in place of the recorded one.
+    let body = CODEX_MCP.replace(
+        "__LOG__",
+        &dir.path().join("codex.log").display().to_string(),
+    );
+    std::fs::write(dir.path().join("codex"), body).unwrap();
+    let thread = thread(&rt).await;
+    let mut rx = bridge.subscribe();
+
+    let mut turn = input();
+    turn.memory = Some(RecalledMemory {
+        guidance: "Supermemory guidance".into(),
+        recalled: Some("Recalled: the deploy key is in 1Password".into()),
+    });
+    rt.start_turn(&thread, turn).await.unwrap();
+    events_until_end(&mut rx).await;
+
+    let log = log(dir.path());
+    let turn_start = log
+        .lines()
+        .find(|l| l.contains(r#""method":"turn/start""#))
+        .expect("turn/start sent");
+    assert!(
+        turn_start.contains("Recalled: the deploy key is in 1Password"),
+        "the recalled memory rides the turn: {turn_start}"
+    );
+    let start = log
+        .lines()
+        .find(|l| l.contains(r#""method":"thread/start""#))
+        .expect("thread/start sent");
+    let start: serde_json::Value = serde_json::from_str(start).unwrap();
+    let server = &start["params"]["config"]["mcp_servers.zlo_bridge"];
+    assert_eq!(server["url"], "http://127.0.0.1:9/mcp", "{start}");
+    let auth = server["http_headers"]["Authorization"].as_str().unwrap();
+    let token = auth.strip_prefix("Bearer ").unwrap();
+    assert!(
+        bridge.resolve_token(token).is_none(),
+        "the turn's token is revoked once the turn ends"
+    );
+
+    let answer = |id: &str| {
+        log.lines()
+            .find(|l| l.contains(&format!(r#""id":"{id}""#)) && !l.contains("method"))
+            .unwrap_or_else(|| panic!("{id} answered: {log}"))
+            .to_string()
+    };
+    assert!(answer("el-1").contains(r#""action":"accept""#));
+    // Another server's ask is not waved through: it stays the person's
+    // question (unanswered here, so not accepted).
+    assert!(!answer("el-2").contains(r#""action":"accept""#));
+}
+
+#[tokio::test]
+async fn without_a_route_this_turn_an_ironclaw_named_server_is_not_waved_through() {
+    // The bridge has no URL yet: no token, no override. A server the person
+    // configured under the same name must not get an automatic yes.
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let bridge = CliBridge::new(DEFAULT_APPROVAL_TIMEOUT);
+    let rt = runtime(dir.path(), &recorder, Arc::clone(&bridge));
+    let body = CODEX_MCP.replace(
+        "__LOG__",
+        &dir.path().join("codex.log").display().to_string(),
+    );
+    std::fs::write(dir.path().join("codex"), body).unwrap();
+    let thread = thread(&rt).await;
+    let mut rx = bridge.subscribe();
+    rt.start_turn(&thread, input()).await.unwrap();
+    events_until_end(&mut rx).await;
+
+    let log = log(dir.path());
+    assert!(
+        !log.contains("mcp_servers.ironclaw"),
+        "no override without a route"
+    );
+    let el1 = log
+        .lines()
+        .find(|l| l.contains(r#""id":"el-1""#) && !l.contains("method"))
+        .unwrap_or_else(|| panic!("el-1 answered: {log}"));
+    assert!(!el1.contains(r#""action":"accept""#), "{el1}");
 }

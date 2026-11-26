@@ -182,6 +182,10 @@ struct TurnPlan<'a> {
     /// The session's working directory; `--resume` finds it only there.
     dir: PathBuf,
     goal: Option<&'a str>,
+    /// The long-term memory's guidance (a system note).
+    memory: Option<&'a str>,
+    /// The recalled memories, fenced: the head of the user message only.
+    recalled: Option<&'a str>,
     effort: Option<&'a str>,
     profile: Option<&'a TurnProfile>,
     /// `--settings` JSON (the skill listing); `None` passes none.
@@ -192,7 +196,7 @@ impl TurnPlan<'_> {
     /// `--append-system-prompt`: SOUL.md, the delegation and visuals notes
     /// and the goal.
     fn system_note(&self) -> crate::context_meter::Notes {
-        crate::system_note(self.profile, self.goal)
+        crate::system_note(self.profile, self.goal, self.memory)
     }
 }
 
@@ -568,7 +572,7 @@ impl ClaudeCliRuntime {
         &self,
         thread: &ThreadRecord,
         text: &str,
-        goal: Option<&str>,
+        (goal, memory, recalled): (Option<&str>, Option<&str>, Option<&str>),
         effort: Option<&str>,
         profile: Option<&TurnProfile>,
     ) -> Result<String, RuntimeError> {
@@ -584,6 +588,8 @@ impl ClaudeCliRuntime {
                 .session_dir(&thread.thread_id, &session_id, profile)
                 .await?,
             goal,
+            memory,
+            recalled,
             effort,
             profile,
             settings: launch.settings.as_deref(),
@@ -643,7 +649,7 @@ impl ClaudeCliRuntime {
             end_mcp(mcp).await;
             return Err(RuntimeError::Unavailable("claude stdio unavailable".into()));
         };
-        let prompt = control::prompt_with_images(&run_id, text).await;
+        let prompt = control::prompt_with_recalled(&run_id, text, plan.recalled).await;
         let steers = SharedSteers::default();
         // From here on only the input owner writes to the CLI.
         let input = Input::spawn(stdin, Arc::clone(&steers), self.write_timeout);
@@ -1073,7 +1079,10 @@ impl TurnRuntime for ClaudeCliRuntime {
         self.sent.sample(thread, || {
             let listing = skills::unmanaged_listing(profile.and_then(|p| p.skills.as_ref()));
             let mcp = self.bridge.as_ref().is_some_and(|b| b.mcp_url().is_some());
-            (crate::system_note(profile, goal).instructions(listing), mcp)
+            (
+                crate::system_note(profile, goal, None).instructions(listing),
+                mcp,
+            )
         })
     }
 
@@ -1121,7 +1130,7 @@ impl TurnRuntime for ClaudeCliRuntime {
         }
         let mut thread = thread.clone();
         if input.model.is_some() {
-            thread.model = input.model;
+            thread.model = input.model.clone();
         }
         if let (Some(profile), Ok(mut profiles)) = (&input.profile, self.profiles.lock()) {
             profiles.insert(thread.thread_id.clone(), profile.clone());
@@ -1132,11 +1141,16 @@ impl TurnRuntime for ClaudeCliRuntime {
                 None => dirs.remove(&thread.thread_id),
             };
         }
+        let recalled = crate::recalled_block(&input);
         let run_id = self
             .spawn_turn(
                 &thread,
                 &input.text,
-                input.goal.as_deref(),
+                (
+                    input.goal.as_deref(),
+                    crate::memory_guidance(&input),
+                    recalled.as_deref(),
+                ),
                 input.effort.as_deref(),
                 input.profile.as_ref(),
             )
@@ -1192,7 +1206,7 @@ impl TurnRuntime for ClaudeCliRuntime {
             .lock()
             .ok()
             .and_then(|p| p.get(&thread.thread_id).cloned()); // silent-ok: a poisoned map only follows a panic elsewhere
-        self.spawn_turn(thread, text, None, None, profile.as_ref())
+        self.spawn_turn(thread, text, (None, None, None), None, profile.as_ref())
             .await?;
         Ok(SteerOutcome::Restarted)
     }

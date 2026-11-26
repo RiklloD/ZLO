@@ -92,6 +92,7 @@ async fn one_turn(rt: &dyn TurnRuntime, recorder: &Recorder) {
         &thread,
         TurnInput {
             text: "Reply with exactly the word pong and nothing else.".into(),
+            memory: None,
             origin: TurnOrigin::UserPrompt,
             model: None,
             goal: None,
@@ -285,6 +286,7 @@ async fn antigravity_live_sees_the_zlo_mcp_tools() {
                    ironclaw, one per line. Then call its t3_capabilities tool once and say \
                    how many providers it lists."
                 .into(),
+            memory: None,
             origin: TurnOrigin::UserPrompt,
             model: None,
             goal: None,
@@ -369,6 +371,7 @@ async fn antigravity_live_steer() {
         &thread,
         TurnInput {
             text: "Write a 60-line poem about the sea, one line at a time. Use no tools.".into(),
+            memory: None,
             origin: TurnOrigin::UserPrompt,
             model: None,
             goal: Some("keep replies short".into()),
@@ -485,6 +488,7 @@ async fn claude_live_turn_with_tasks_and_a_steer() {
         &thread,
         TurnInput {
             text: "First call TaskCreate once with subject \"Canary\". Then write the numbers one to sixty as words, one per line.".into(),
+            memory: None,
             origin: TurnOrigin::UserPrompt,
             model: None,
             goal: None,

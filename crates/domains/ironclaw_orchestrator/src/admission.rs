@@ -854,7 +854,11 @@ impl Engine {
             return Ok(false);
         }
         let delivered = self
-            .deliver(thread_id, head.text.clone(), TurnOrigin::QueueDrain, true)
+            .deliver_queued(
+                thread_id,
+                head.text.clone(),
+                head.created_by == Author::User,
+            )
             .await;
         let started = matches!(delivered, Ok(true));
         let mut settle = Settle::to(if started {

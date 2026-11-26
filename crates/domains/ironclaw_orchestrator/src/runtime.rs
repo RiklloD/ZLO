@@ -202,6 +202,8 @@ impl TurnOutcome {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TurnInput {
     pub text: String,
+    /// Long-term memory recalled for this turn (`crate::turn_memory`).
+    pub memory: Option<RecalledMemory>,
     /// Why the engine starts this turn. User-typed turns reach a runtime here
     /// only on threads that do not run on IronClaw's loop.
     pub origin: TurnOrigin,
@@ -224,6 +226,18 @@ pub struct TurnInput {
     /// the profile folder and the runtime's default (see
     /// [`TurnRuntime::supports_work_dir`]).
     pub work_dir: Option<std::path::PathBuf>,
+}
+
+/// What a turn's long-term memory hands the agent. The two halves travel
+/// apart: `guidance` is host-authored and may sit beside the goal (a
+/// system note); `recalled` is retrieved content, untrusted data, and goes
+/// only where the person's own message goes, never into a system prompt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecalledMemory {
+    /// Which memory is on and which tools reach it.
+    pub guidance: String,
+    /// The memories recalled for this message, already fenced as untrusted.
+    pub recalled: Option<String>,
 }
 
 /// A profile's identity, folder and skills for one CLI turn.

@@ -42,6 +42,8 @@ pub(crate) struct FakeRuntime {
     pub(crate) entered: Arc<tokio::sync::Notify>,
     /// The runtime's session lock, held through every steer.
     pub(crate) session: Arc<tokio::sync::Mutex<()>>,
+    /// Each started turn's recalled memory (`TurnInput::memory`).
+    pub(crate) memories: Mutex<Vec<Option<RecalledMemory>>>,
 }
 
 impl FakeRuntime {
@@ -136,6 +138,7 @@ impl TurnRuntime for FakeRuntime {
             .lock()
             .unwrap()
             .push((t.thread_id.clone(), input.text.clone()));
+        self.memories.lock().unwrap().push(input.memory.clone());
         let mut history = self.history.lock().unwrap();
         history
             .entry(t.thread_id.clone())
@@ -2115,4 +2118,112 @@ async fn a_rescan_registers_a_runtime_installed_after_boot_and_never_replaces_on
         .runtime(&RuntimeId::new("late-cli").unwrap())
         .unwrap();
     assert!(Arc::ptr_eq(&first, &still), "a running runtime is kept");
+}
+
+#[tokio::test]
+async fn cli_turns_get_recalled_memory_and_their_exchange_is_captured() {
+    use crate::turn_memory::TurnMemory;
+
+    #[derive(Default)]
+    struct Memory {
+        recalled: Mutex<Vec<String>>,
+        captured: Mutex<Vec<(ThreadId, String, String)>>,
+    }
+    #[async_trait]
+    impl TurnMemory for Memory {
+        async fn recall(&self, _thread: &ThreadRecord, text: &str) -> Option<RecalledMemory> {
+            self.recalled.lock().unwrap().push(text.to_string());
+            Some(RecalledMemory {
+                guidance: "guidance".into(),
+                recalled: Some(format!("recalled for: {text}")),
+            })
+        }
+        async fn capture(&self, thread: &ThreadRecord, asked: &str, answer: &str) {
+            self.captured.lock().unwrap().push((
+                thread.thread_id.clone(),
+                asked.to_string(),
+                answer.to_string(),
+            ));
+        }
+    }
+
+    let h = harness().await;
+    let memory = Arc::new(Memory::default());
+    h.engine.set_turn_memory(memory.clone());
+    let t = tid("t");
+    h.engine.ensure_thread(&t, &scope(), None).await.unwrap();
+
+    assert!(
+        h.engine
+            .deliver(
+                &t,
+                "where is the deploy key?".into(),
+                TurnOrigin::UserPrompt,
+                false
+            )
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        h.rt.memories
+            .lock()
+            .unwrap()
+            .last()
+            .cloned()
+            .flatten()
+            .and_then(|memory| memory.recalled),
+        Some("recalled for: where is the deploy key?".to_string())
+    );
+    finish(
+        &h.engine,
+        &t,
+        TurnOutcome::completed(Some("In 1Password.".into())),
+    )
+    .await;
+    // Capture runs off the engine's path.
+    for _ in 0..50 {
+        if !memory.captured.lock().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        memory.captured.lock().unwrap().clone(),
+        vec![(
+            t.clone(),
+            "where is the deploy key?".to_string(),
+            "In 1Password.".to_string()
+        )]
+    );
+
+    // The engine's own text (a result delivery) is neither recalled for
+    // nor captured.
+    assert!(
+        h.engine
+            .deliver(&t, "child result".into(), TurnOrigin::ResultDelivery, false)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        h.rt.memories.lock().unwrap().last().cloned().flatten(),
+        None
+    );
+    finish(&h.engine, &t, TurnOutcome::completed(Some("noted".into()))).await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert_eq!(memory.captured.lock().unwrap().len(), 1);
+    assert_eq!(memory.recalled.lock().unwrap().len(), 1);
+
+    // A failed turn is not captured.
+    h.engine
+        .deliver(&t, "try again".into(), TurnOrigin::UserPrompt, false)
+        .await
+        .unwrap();
+    finish(
+        &h.engine,
+        &t,
+        TurnOutcome::ended(TurnEndStatus::Failed, None),
+    )
+    .await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert_eq!(memory.captured.lock().unwrap().len(), 1);
 }

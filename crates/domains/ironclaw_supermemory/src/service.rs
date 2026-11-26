@@ -62,6 +62,10 @@ pub struct Recall {
     /// Host-authored guidance naming the containers and tools.
     pub guidance: String,
     pub primary: ContainerTag,
+    /// Searchable, never written.
+    pub readable: Vec<ContainerTag>,
+    /// The binding's own instructions (a profile's notes on its containers).
+    pub instructions: Option<String>,
     pub items: Vec<RecallItem>,
     /// Recall was attempted and failed; `items` is empty.
     pub degraded: bool,
@@ -222,6 +226,8 @@ impl Supermemory {
         let empty = |degraded| Recall {
             guidance: guidance.clone(),
             primary: active.primary.clone(),
+            readable: active.readable.clone(),
+            instructions: active.instructions.clone(),
             items: Vec::new(),
             degraded,
         };
@@ -286,10 +292,26 @@ impl Supermemory {
         let Some(active) = self.active(caller).await? else {
             return Ok(false);
         };
-        let Some(turn) = CapturedTurn::new(thread_key, user, assistant) else {
+        let Some(mut turn) = CapturedTurn::new(thread_key, user, assistant) else {
             return Ok(false);
         };
-        let mut turns = std::mem::take(&mut *self.pending_lock());
+        // Retries go only to the account and container they were captured
+        // for: another caller's pending turns stay pending for it.
+        let owner = format!(
+            "{}/{}/{}",
+            caller.tenant_id.as_str(),
+            caller.user_id.as_str(),
+            active.primary.as_str()
+        );
+        turn.owner = owner.clone();
+        let mut turns = {
+            let mut pending = self.pending_lock();
+            let (mine, others): (Vec<_>, Vec<_>) = std::mem::take(&mut *pending)
+                .into_iter()
+                .partition(|turn| turn.owner == owner);
+            *pending = others;
+            mine
+        };
         turns.push(turn);
         let mut threads: Vec<String> = Vec::new();
         for turn in &turns {
@@ -329,6 +351,17 @@ impl Supermemory {
         Ok(current_written)
     }
 
+    /// The stored key changed: captures still waiting were for the old key's
+    /// account and are dropped, never written under the new one. The
+    /// conversations themselves stay in their threads.
+    pub(crate) fn key_changed(&self) {
+        self.client.forget_cached_key();
+        let dropped = std::mem::take(&mut *self.pending_lock()).len();
+        if dropped > 0 {
+            tracing::debug!(dropped, "supermemory key changed; pending captures dropped");
+        }
+    }
+
     fn pending_lock(&self) -> std::sync::MutexGuard<'_, Vec<CapturedTurn>> {
         self.pending.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -360,6 +393,8 @@ impl Supermemory {
             .active_with(caller, binding)
             .await?
             .ok_or(SupermemoryError::Disabled)?;
+        // No credential leaves in a query, whoever asks (tool or page).
+        let query = crate::capture::redact_for_egress(query.trim());
         let query = query.trim();
         if query.is_empty() {
             return Err(SupermemoryError::InvalidInput {
@@ -396,6 +431,8 @@ impl Supermemory {
             .active(caller)
             .await?
             .ok_or(SupermemoryError::Disabled)?;
+        // A credential the agent was handed is never stored remotely.
+        let content = crate::capture::redact_for_egress(content.trim());
         let content = content.trim();
         if content.is_empty() {
             return Err(SupermemoryError::InvalidInput {

@@ -66,6 +66,6 @@ impl ServiceKeyVerifier for SupermemoryKeyVerifier {
     }
 
     async fn key_changed(&self) {
-        self.supermemory.client().forget_cached_key();
+        self.supermemory.key_changed();
     }
 }

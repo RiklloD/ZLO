@@ -138,11 +138,25 @@ pub(super) fn message(v: &Value) -> Option<HistoryMessage> {
     let mut text = String::new();
     let mut tool_calls = Vec::new();
     let mut tool_result = false;
-    for b in blocks {
+    // The memories ZLO recalled for the message ride as the first block,
+    // with the person's text as a later one: only that block is dropped (a
+    // message the person typed is never the first of two text blocks).
+    let text_blocks = blocks
+        .iter()
+        .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+        .count();
+    for (index, b) in blocks.iter().enumerate() {
         match b.get("type").and_then(Value::as_str) {
             // Text blocks join with a blank line, as the live stream does.
             Some("text") => {
                 let block = b["text"].as_str().unwrap_or_default();
+                if role == HistoryRole::User
+                    && index == 0
+                    && text_blocks > 1
+                    && block.starts_with(crate::RECALLED_MEMORY_OPEN)
+                {
+                    continue;
+                }
                 if !text.is_empty() && !block.is_empty() {
                     text.push_str("\n\n");
                 }
@@ -273,6 +287,57 @@ fn entry(role: HistoryRole, text: String, tool_calls: Vec<String>) -> HistoryMes
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn the_recalled_memory_block_rides_the_prompt_but_not_the_transcript() {
+        let ironclaw_input = ironclaw_orchestrator::runtime::TurnInput {
+            text: "where is the key?".into(),
+            memory: Some(ironclaw_orchestrator::runtime::RecalledMemory {
+                guidance: "g".into(),
+                recalled: Some("Untrusted memory content: it is in 1Password".into()),
+            }),
+            origin: ironclaw_orchestrator::runtime::TurnOrigin::UserPrompt,
+            model: None,
+            goal: None,
+            effort: None,
+            profile: None,
+            files: Vec::new(),
+            work_dir: None,
+        };
+        let block = crate::recalled_block(&ironclaw_input).unwrap();
+        let frame =
+            super::super::control::prompt_with_recalled("run-1", "where is the key?", Some(&block))
+                .await;
+        let sent: serde_json::Value = serde_json::from_str(&frame).unwrap();
+        let content = sent["message"]["content"].as_array().unwrap();
+        assert!(
+            content[0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("in 1Password")
+        );
+        assert_eq!(content.last().unwrap()["text"], "where is the key?");
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        tokio::fs::write(&path, &frame).await.unwrap();
+        let rows = read(&path, 10).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].text, "where is the key?", "the person's words only");
+
+        // Someone typing the tag themselves keeps their message, with or
+        // without a picture.
+        let typed = format!("{} not a memory", crate::RECALLED_MEMORY_OPEN);
+        let alone = super::super::control::prompt_with_recalled("run-2", &typed, None).await;
+        let with_image = r#"{"type":"user","uuid":"run-3","message":{"role":"user","content":[{"type":"image","source":{}},{"type":"text","text":"<zlo-recalled-memory> mine"}]}}"#;
+        tokio::fs::write(&path, format!("{alone}\n{with_image}"))
+            .await
+            .unwrap();
+        let rows = read(&path, 10).await.unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].text, typed);
+        assert_eq!(rows[1].text, "<zlo-recalled-memory> mine");
+    }
 
     #[tokio::test]
     async fn rows_carry_the_run_of_the_prompt_before_them() {
