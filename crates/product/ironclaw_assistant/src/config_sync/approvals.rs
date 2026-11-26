@@ -43,8 +43,18 @@ pub struct ApprovalsDomainHandler {
     notes: Arc<dyn super::notes::SyncNotes>,
 }
 
-/// What sync made here for one other computer: tool to the state it set.
-type Made = BTreeMap<String, ToolApprovalSyncState>;
+/// One override or grant a pass made here: the state it set, and when the
+/// record that holds it was last written, as read back after the pass.
+/// `at` is `None` between the note of an intent and the pass's end.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct MadeEntry {
+    state: ToolApprovalSyncState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    at: Option<DateTime<Utc>>,
+}
+
+/// What sync made here for one other computer, by tool.
+type Made = BTreeMap<String, MadeEntry>;
 
 impl ApprovalsDomainHandler {
     /// The record's path, when there is a place to keep one and the ids
@@ -205,6 +215,50 @@ impl ApprovalsDomainHandler {
         Ok((global_auto_approve, tool_overrides, latest_updated))
     }
 
+    /// When the record that decides each tool's state was last written:
+    /// a change made on this computer since, even back to the same state,
+    /// moves it.
+    async fn stamps(
+        &self,
+        ctx: &ConfigSyncContext,
+    ) -> Result<BTreeMap<String, DateTime<Utc>>, ConfigSyncError> {
+        let scope = Self::settings_scope(ctx);
+        let store = |error: &dyn std::fmt::Display| ConfigSyncError::Store {
+            domain: ConfigSyncDomain::Approvals,
+            reason: error.to_string(),
+        };
+        let mut out = BTreeMap::new();
+        if self.persistent_policies.supports_scope_listing() {
+            for policy in self
+                .persistent_policies
+                .list_for_scope_action(&scope, PersistentApprovalAction::Dispatch)
+                .await
+                .map_err(|error| store(&error))?
+            {
+                if policy.active_grant().is_some() {
+                    out.insert(
+                        policy.key.capability_id.as_str().to_string(),
+                        policy.updated_at,
+                    );
+                }
+            }
+        }
+        if self.overrides.supports_scope_listing() {
+            for record in self
+                .overrides
+                .list_for_scope(&scope)
+                .await
+                .map_err(|error| store(&error))?
+            {
+                out.insert(
+                    record.key.capability_id.as_str().to_string(),
+                    record.updated_at,
+                );
+            }
+        }
+        Ok(out)
+    }
+
     fn hash_state(
         global_auto_approve: bool,
         tool_overrides: &[ToolApprovalOverrideEntry],
@@ -322,7 +376,28 @@ impl ConfigSyncDomainHandler for ApprovalsDomainHandler {
         // What earlier passes from this computer made here, and what this
         // one leaves standing.
         let made_before = self.made(ctx).await?;
-        let mut made = Made::new();
+        let stamps_before = self.stamps(ctx).await?;
+        // Still as a pass left it: the same state, in a record not written
+        // since (an entry noted but never stamped goes by its state).
+        let untouched = |cap_id: &str, entry: &MadeEntry| {
+            current_map.get(cap_id) == Some(&entry.state)
+                && entry
+                    .at
+                    .is_none_or(|at| stamps_before.get(cap_id) == Some(&at))
+        };
+        let mut made: BTreeMap<String, ToolApprovalSyncState> = BTreeMap::new();
+        // What this pass is about to make is noted before it is made: a
+        // grant must never stand on this computer without a note that
+        // sync put it there, or it could not be taken back.
+        let mut intent = made_before.clone();
+        for (&cap_id, &state) in &desired_map {
+            if current_map.get(cap_id) != Some(&state) {
+                intent.insert(cap_id.to_string(), MadeEntry { state, at: None });
+            }
+        }
+        if intent != made_before {
+            self.remember(ctx, &intent).await?;
+        }
 
         // 1. Global auto-approve toggle.
         if current_auto != p.global_auto_approve {
@@ -346,7 +421,10 @@ impl ConfigSyncDomainHandler for ApprovalsDomainHandler {
         for (&cap_id, &desired_state) in &desired_map {
             if current_map.get(cap_id) == Some(&desired_state) {
                 // Still as a pass made it: still sync's to take back.
-                if made_before.get(cap_id) == Some(&desired_state) {
+                if made_before
+                    .get(cap_id)
+                    .is_some_and(|entry| untouched(cap_id, entry))
+                {
                     made.insert(cap_id.to_string(), desired_state);
                 }
                 skipped_count += 1;
@@ -461,12 +539,11 @@ impl ConfigSyncDomainHandler for ApprovalsDomainHandler {
         // made here, and that is still as that pass left it, is taken back
         // (the source reset it; left standing, a grant would keep allowing
         // a tool the person has put back to asking).
-        for (cap_id, was) in &made_before {
-            if desired_map.contains_key(cap_id.as_str())
-                || current_map.get(cap_id.as_str()) != Some(was)
-            {
+        for (cap_id, entry) in &made_before {
+            if desired_map.contains_key(cap_id.as_str()) || !untouched(cap_id, entry) {
                 continue;
             }
+            let was = &entry.state;
             let Ok(capability_id) = CapabilityId::new(cap_id.as_str()) else {
                 continue;
             };
@@ -506,8 +583,22 @@ impl ConfigSyncDomainHandler for ApprovalsDomainHandler {
                 }
             }
         }
-        if made != made_before {
-            self.remember(ctx, &made).await?;
+        // Each entry is stamped with its record as it stands now, so a
+        // later change on this computer can be told from sync's own.
+        let stamps_after = self.stamps(ctx).await?;
+        let made: Made = made
+            .into_iter()
+            .map(|(cap_id, state)| {
+                let at = stamps_after.get(&cap_id).copied();
+                (cap_id, MadeEntry { state, at })
+            })
+            .collect();
+        if made != intent
+            && let Err(error) = self.remember(ctx, &made).await
+        {
+            // The intent noted above still stands for these entries.
+            tracing::debug!(%error, "config sync: approvals record not updated");
+            warnings.push("what this sync set could not be fully recorded".to_string());
         }
 
         let status = if applied_count > 0 {

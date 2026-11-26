@@ -665,5 +665,19 @@ Phases 1, 2 and 5 are in. What differs from the sketch above:
   - What a side held back is part of its digest, so a pass is made that
     says it even when everything that can be carried already matches.
 
+- **After the seventh review (2026-11-26; "ship after fixes").**
+  - A rules file's copy is written under a temporary name and given its
+    own only when whole; a copy already there counts only if it is the
+    same bytes.
+  - A skill's bundle is handed to a keeper by the skill store itself,
+    under the lock of the replacement (`ReplacedBundleKeeper`), so what
+    is kept is what is replaced, whatever the listing called it. A folder
+    of that name without a skill in it is not written into.
+  - Approvals: what a pass is about to make is recorded before it is made
+    and stamped afterwards with each record's last-written time. A reset
+    on the source takes back only a record still in that state and not
+    written since, so a restriction set again on the receiver is its own.
+  - An encrypted PEM key (header lines before its body) is recognised.
+
 Left: phase 3 (provider catalog and keys), phase 4 (extensions, hooks,
 automations).

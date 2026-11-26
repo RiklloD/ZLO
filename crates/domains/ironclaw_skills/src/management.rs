@@ -25,6 +25,7 @@ mod install_bundle;
 #[cfg(test)]
 mod tests;
 
+pub use install_bundle::ReplacedBundleKeeper;
 pub use install_bundle::{
     MAX_INSTALL_BUNDLE_FILE_BYTES, MAX_INSTALL_BUNDLE_FILES, MAX_INSTALL_BUNDLE_TOTAL_BYTES,
     SkillInstallFile, normalize_install_bundle_relative_path,

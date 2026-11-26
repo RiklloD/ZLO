@@ -47,6 +47,14 @@ struct OwnedSkillBundleFile {
     contents: Vec<u8>,
 }
 
+/// Takes a skill's bundle for keeping just before it is replaced.
+#[async_trait::async_trait]
+pub trait ReplacedBundleKeeper: Send + Sync {
+    /// Keep `files`, the bundle of `skill_name` as it is now. `Err`: it
+    /// could not be kept, and the skill is then not replaced.
+    async fn keep(&self, skill_name: &str, files: &[(String, Vec<u8>)]) -> Result<(), String>;
+}
+
 impl SkillBundleSnapshot {
     /// Every file of the bundle, by its path inside the skill.
     pub(crate) fn into_files(self) -> Vec<(String, Vec<u8>)> {
@@ -209,6 +217,7 @@ pub(crate) async fn replace_skill_bundle(
     context: &SkillManagementContext,
     skill_name: &str,
     snapshot: SkillBundleSnapshot,
+    keeper: Option<&dyn ReplacedBundleKeeper>,
 ) -> Result<(), SkillManagementError> {
     if !validate_skill_name(skill_name) {
         return Err(SkillManagementError::new(
@@ -252,12 +261,42 @@ pub(crate) async fn replace_skill_bundle(
 
     let mutation_lock = skill_mutation_lock(skill_name);
     let _mutation_guard = mutation_lock.lock().await;
+    let skill_dir = skill_root_scoped_path(USER_SKILLS_ROOT, skill_name)?;
     let previous = match capture_unlocked(context, skill_name).await {
         Ok(bundle) => bundle.files,
-        Err(error) if error.kind() == SkillManagementErrorKind::NotFound => Vec::new(),
+        // No skill of that name. A folder there all the same is something
+        // unfinished or foreign, not captured, and not written into.
+        Err(error) if error.kind() == SkillManagementErrorKind::NotFound => {
+            if stat_optional(context, &skill_dir).await?.is_some() {
+                return Err(SkillManagementError::with_reason(
+                    SkillManagementErrorKind::Conflict,
+                    "a folder of that name is here without a skill in it".to_string(),
+                ));
+            }
+            Vec::new()
+        }
         Err(error) => return Err(error),
     };
-    let skill_dir = skill_root_scoped_path(USER_SKILLS_ROOT, skill_name)?;
+    // The bundle about to be replaced is handed over for keeping, under
+    // the same lock as the replacement: what is kept is what is replaced.
+    let differs = previous.len() != incoming.len()
+        || previous.iter().any(|old| {
+            !incoming
+                .iter()
+                .any(|(path, _, contents)| *path == old.relative_path && **contents == old.contents)
+        });
+    if let (Some(keeper), true, false) = (keeper, differs, previous.is_empty()) {
+        let held: Vec<(String, Vec<u8>)> = previous
+            .iter()
+            .map(|file| (file.relative_path.clone(), file.contents.clone()))
+            .collect();
+        keeper.keep(skill_name, &held).await.map_err(|why| {
+            SkillManagementError::with_reason(
+                SkillManagementErrorKind::Conflict,
+                format!("the skill here could not be kept before replacing it: {why}"),
+            )
+        })?;
+    }
     create_dir_all(context, skill_name, "replace_create_dir_all", &skill_dir).await?;
     // A file that would become a folder, or a folder a file, cannot be
     // replaced in place on every store (a folder's own record outlives its

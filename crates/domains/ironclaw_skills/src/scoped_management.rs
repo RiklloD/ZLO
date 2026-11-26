@@ -182,8 +182,28 @@ impl ScopedSkillManagementPort {
         name: &str,
         files: Vec<(String, Vec<u8>)>,
     ) -> Result<(), ScopedSkillManagementError> {
+        self.replace_bundle_keeping_for_scope(scope, name, files, None)
+            .await
+    }
+
+    /// [`Self::replace_bundle_for_scope`], handing the bundle that is
+    /// about to be replaced to `keeper` first, under the same lock. When it
+    /// cannot be kept, nothing is replaced.
+    pub async fn replace_bundle_keeping_for_scope(
+        &self,
+        scope: ResourceScope,
+        name: &str,
+        files: Vec<(String, Vec<u8>)>,
+        keeper: Option<&dyn crate::ReplacedBundleKeeper>,
+    ) -> Result<(), ScopedSkillManagementError> {
         let context = self.context_for_scope(scope)?;
-        Ok(replace_skill_bundle(&context, name, SkillBundleSnapshot::from_files(files)).await?)
+        Ok(replace_skill_bundle(
+            &context,
+            name,
+            SkillBundleSnapshot::from_files(files),
+            keeper,
+        )
+        .await?)
     }
 
     pub async fn update_for_scope(

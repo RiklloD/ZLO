@@ -36,42 +36,6 @@ impl SkillsDomainHandler {
         Self { skills, notes }
     }
 
-    /// Keep this computer's bundle of `name` before it is replaced: the
-    /// source's bundle takes its place whole, files only this one had
-    /// included. Create-only, named by the bundle's own digest, so the
-    /// same bundle is kept once. `Err`: no copy, and no replacement.
-    async fn keep(
-        &self,
-        ctx: &ConfigSyncContext,
-        scope: &ResourceScope,
-        name: &str,
-        digest: &str,
-    ) -> Result<(), String> {
-        let files = self
-            .skills
-            .export_bundle_for_scope(scope.clone(), name)
-            .await
-            .map_err(|error| error.to_string())?;
-        let short: String = digest
-            .trim_start_matches("sha256:")
-            .chars()
-            .take(16)
-            .collect();
-        let copy = serde_json::to_vec(&items::encode(files)).map_err(|error| error.to_string())?;
-        let path = [
-            "skill-backups",
-            ctx.caller.tenant_id.as_str(),
-            ctx.caller.user_id.as_str(),
-            name,
-            short.as_str(),
-        ];
-        self.notes
-            .create(&path, &copy)
-            .await
-            .map(|_| ())
-            .map_err(|error| error.to_string())
-    }
-
     /// The person's skills here: name to bundle digest, and the skills
     /// held back because a file in them is a key or holds a secret.
     async fn index(
@@ -113,6 +77,41 @@ impl SkillsDomainHandler {
             out.insert(skill.name, items::files_hash(&files));
         }
         Ok((out, held_back))
+    }
+}
+
+/// Copies a skill's bundle to the sync records just before it is replaced:
+/// the source's bundle takes its place whole, files only this one had
+/// included. Create-only, named by the bundle's own digest, so the same
+/// bundle is kept once.
+struct KeepInNotes<'a> {
+    notes: &'a dyn super::notes::SyncNotes,
+    ctx: &'a ConfigSyncContext,
+}
+
+#[async_trait]
+impl ironclaw_skills::ReplacedBundleKeeper for KeepInNotes<'_> {
+    async fn keep(&self, skill_name: &str, files: &[(String, Vec<u8>)]) -> Result<(), String> {
+        let short: String = items::files_hash(files)
+            .trim_start_matches("sha256:")
+            .chars()
+            .take(16)
+            .collect();
+        let copy = serde_json::to_vec(&items::encode(files.to_vec()))
+            .map_err(|error| error.to_string())?;
+        let path = [
+            "skill-backups",
+            self.ctx.caller.tenant_id.as_str(),
+            self.ctx.caller.user_id.as_str(),
+            skill_name,
+            short.as_str(),
+        ];
+        // `false`: this very bundle was kept before.
+        self.notes
+            .create(&path, &copy)
+            .await
+            .map(|_| ())
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -241,19 +240,13 @@ impl ConfigSyncDomainHandler for SkillsDomainHandler {
                 skipped += 1;
                 continue;
             }
-            if let Some(digest) = held.get(&item.key)
-                && let Err(why) = self.keep(ctx, &scope, &item.key, digest).await
-            {
-                warnings.push(format!(
-                    "skill {} was not synced: the one here could not be kept first ({why})",
-                    item.key
-                ));
-                skipped += 1;
-                continue;
-            }
+            let keeper = KeepInNotes {
+                notes: self.notes.as_ref(),
+                ctx,
+            };
             match self
                 .skills
-                .replace_bundle_for_scope(scope.clone(), &item.key, files)
+                .replace_bundle_keeping_for_scope(scope.clone(), &item.key, files, Some(&keeper))
                 .await
             {
                 Ok(()) => applied += 1,

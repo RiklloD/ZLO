@@ -302,21 +302,54 @@ fn keep_copy(top: &OwnedFd, names: &[&str], held: &[u8]) -> io::Result<()> {
         .collect();
     let path: String = names.join("__").chars().take(150).collect();
     let name = format!("{path}.{short}");
-    match rustix::fs::openat(
+    // Written under another name and given its own only when whole: a
+    // copy cut short (a full disk) never stands for the file.
+    let temporary = format!(".{short}.{}.tmp", Uuid::new_v4());
+    let fd = rustix::fs::openat(
         folder.as_fd(),
-        name.as_str(),
+        temporary.as_str(),
         OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::RUSR | Mode::WUSR,
-    ) {
-        Ok(fd) => {
-            let mut file = std::fs::File::from(fd);
-            file.write_all(held)?;
-            file.sync_all()
+    )
+    .map_err(rx)?;
+    let written = (|| {
+        let mut file = std::fs::File::from(fd);
+        file.write_all(held)?;
+        file.sync_all()?;
+        match rustix::fs::renameat_with(
+            folder.as_fd(),
+            temporary.as_str(),
+            folder.as_fd(),
+            name.as_str(),
+            rustix::fs::RenameFlags::NOREPLACE,
+        ) {
+            Ok(()) => Ok(()),
+            // A copy is there under this name: it counts only if it is
+            // these very bytes.
+            Err(rustix::io::Errno::EXIST) => {
+                let there =
+                    rustix::fs::openat(folder.as_fd(), name.as_str(), ANY_FLAGS, Mode::empty())
+                        .map_err(rx)
+                        .and_then(|fd| read_all(fd, items::ITEM_CONTENT_BYTES))?;
+                if there == held {
+                    Ok(())
+                } else {
+                    Err(io::Error::other(
+                        "a different copy is kept under the same name",
+                    ))
+                }
+            }
+            Err(error) => Err(rx(error)),
         }
-        // The same content was kept before.
-        Err(rustix::io::Errno::EXIST) => Ok(()),
-        Err(error) => Err(rx(error)),
+    })();
+    // On success after a rename the name is gone; otherwise it is ours to
+    // remove.
+    if let Err(error) = rustix::fs::unlinkat(folder.as_fd(), temporary.as_str(), AtFlags::empty())
+        && error != rustix::io::Errno::NOENT
+    {
+        tracing::debug!(%error, "config sync: temporary copy not removed");
     }
+    written
 }
 
 /// Run a walk of the disk off the async workers where the runtime allows.
@@ -1246,6 +1279,30 @@ mod tests {
                 .any(|w| w.contains("is kept")),
             "{:?}",
             result.outcome
+        );
+    }
+
+    #[tokio::test]
+    async fn a_copy_cut_short_is_not_taken_for_the_file() {
+        let (mac, boxed) = (Host::new(), Host::new());
+        boxed.put(".alpha/RULES.md", "the box's own rules\n");
+        mac.put(".alpha/RULES.md", "the mac's rules\n");
+        // What an earlier, interrupted attempt could have left: the copy's
+        // name with only part of the text.
+        let short: String = items::sha256(b"the box's own rules\n")
+            .trim_start_matches("sha256:")
+            .chars()
+            .take(16)
+            .collect();
+        boxed.put(
+            &format!(".alpha/.zlo-sync-backups/RULES.md.{short}"),
+            "the box",
+        );
+        let result = carry(&mac, &boxed).await;
+        assert_eq!(result.outcome.applied_count, 0, "{:?}", result.outcome);
+        assert_eq!(
+            boxed.get(".alpha/RULES.md").as_deref(),
+            Some("the box's own rules\n")
         );
     }
 

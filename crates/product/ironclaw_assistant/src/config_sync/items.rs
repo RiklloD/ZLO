@@ -145,19 +145,15 @@ pub fn secret_bytes(bytes: &[u8]) -> bool {
         b"_SECRET",
         b"api_key",
     ];
-    // A key block: the header, then at least a line of key material.
+    // A key block: the header, then key material. An encrypted key has
+    // header lines (`Proc-Type`, `DEK-Info`) before it, so the material is
+    // looked for anywhere in the stretch that follows.
     let block = found(bytes, BLOCK).any(|after| {
-        let body = bytes.get(after..).unwrap_or_default();
-        let lead = body
-            .iter()
-            .take_while(|b| b.is_ascii_whitespace() || **b == b'\\' || **b == b'n')
-            .count();
-        body.get(lead..)
-            .unwrap_or_default()
-            .iter()
-            .take_while(|b| b.is_ascii_alphanumeric() || b"+/=".contains(b))
-            .count()
-            >= 40
+        let stretch = bytes.get(after..).unwrap_or_default();
+        let stretch = stretch.get(..stretch.len().min(4096)).unwrap_or_default();
+        stretch
+            .split(|b| !(b.is_ascii_alphanumeric() || b"+/=".contains(b)))
+            .any(|run| run.len() >= 40)
     });
     block
         || FIELDS
@@ -552,6 +548,7 @@ mod tests {
         for secret in [
             "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtz\n",
             "users:\n- user:\n    client-key-data: LS0tLS1CRUdJTiBSU0EgUFJJVkFURSBLRVktLS0tLQ==\n",
+            "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,2F1A9C0B7D3E4F5A6B7C8D9E0F1A2B3C\n\nMIIEpAIBAAKCAQEAu1SU1LfVLPHCozMxH2Mo4lgOEePzNm0tRgeLezV6ffAt0gun\n",
             "{\"access_token\": \"ya29.a0AfH6SMBx7r3kQ9vT2uYp1LzWqE8\"}",
             "OPENAI_API_KEY=sk-proj-9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c\n",
             "export GITHUB_TOKEN='ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8'\n",

@@ -1233,12 +1233,23 @@ async fn a_restriction_the_mac_resets_is_taken_back_and_the_boxs_own_are_kept() 
     let off = Some(CapabilityPermissionOverride::Disabled);
     set(&mac, "demo.shared", off).await;
     set(&mac, "demo.edited", off).await;
+    set(&mac, "demo.set_again", off).await;
     set(&boxed, "demo.box_only", off).await;
     pass().await;
     assert_eq!(
         held(&boxed).await,
-        ["demo.box_only", "demo.edited", "demo.shared"]
+        [
+            "demo.box_only",
+            "demo.edited",
+            "demo.set_again",
+            "demo.shared"
+        ]
     );
+    // On the box one is put back to default and then switched off again:
+    // the same state as sync left, and the box's own decision now.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    set(&boxed, "demo.set_again", None).await;
+    set(&boxed, "demo.set_again", off).await;
 
     // The box changes one that sync made; the Mac then resets both of its.
     set(
@@ -1249,8 +1260,12 @@ async fn a_restriction_the_mac_resets_is_taken_back_and_the_boxs_own_are_kept() 
     .await;
     set(&mac, "demo.shared", None).await;
     set(&mac, "demo.edited", None).await;
+    set(&mac, "demo.set_again", None).await;
     pass().await;
-    // Taken back: the one still as sync made it. Kept: the box's own, and
-    // the one the box has changed since.
-    assert_eq!(held(&boxed).await, ["demo.box_only", "demo.edited"]);
+    // Taken back: the one still as sync made it. Kept: the box's own, the
+    // one the box changed, and the one it set again itself.
+    assert_eq!(
+        held(&boxed).await,
+        ["demo.box_only", "demo.edited", "demo.set_again"]
+    );
 }
