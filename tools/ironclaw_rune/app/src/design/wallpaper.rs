@@ -7,8 +7,9 @@
 //! area's size in points, so the effect's dots stay crisp, and land in one
 //! `rune::Pixels`. Nothing runs while the app is idle; a resize repaints once
 //! the area has been still for [`SETTLE`]; opacity and fit change for free.
-//! A new picture crossfades in over the old one (a presence fade on its
-//! key); a folder can move on to its next picture on a timer.
+//! A picture the person just picked crossfades in over the old one (a
+//! presence fade on its key, asked by [`reload_picked`]); any other repaint
+//! lands at once. A folder can move on to its next picture on a timer.
 //!
 //! Rune does the compositing itself: the layer's opacity
 //! applies to the composited pair (an isolated group), so a crossfade never
@@ -54,6 +55,10 @@ pub struct WallpaperState {
     rotation: u64,
     /// The palette brightness the current picture was painted for.
     painted_light: Option<bool>,
+    /// The request the person just made (a picture, effect or fit picked):
+    /// its paint crossfades in. Any other paint (launch, resize, folder
+    /// timer, system appearance) lands at once, as background commits do.
+    picked: Option<u64>,
 }
 
 impl WallpaperState {}
@@ -157,6 +162,14 @@ pub fn reload(s: &mut State) {
         return;
     }
     schedule(s, Duration::ZERO);
+}
+
+/// [`reload`] for a change the person just made: the new picture's
+/// landing crossfades over the old one instead of swapping at once.
+pub fn reload_picked(s: &mut State) {
+    reload(s);
+    let w = &mut s.look.wallpaper;
+    w.picked = Some(w.generation);
 }
 
 /// Re-arm the folder timer (`wallpaper_interval` minutes): each tick moves
@@ -274,12 +287,27 @@ fn paint_now(s: &mut State, generation: u64) {
     jobs::blocking(
         s,
         move || job.run(),
-        move |s, (w, h, rgba), _tx| {
-            if s.look.wallpaper.generation == generation {
-                land(s, w, h, rgba, light);
-            }
-        },
+        move |s, (w, h, rgba), tx| painted(s, generation, (w, h, rgba), light, tx),
     );
+}
+
+/// A paint finished: the latest request's picture lands, crossfading when
+/// the person asked for it (a job reply lands at once otherwise).
+fn painted(
+    s: &mut State,
+    generation: u64,
+    (w, h, rgba): (u32, u32, Vec<u8>),
+    light: bool,
+    tx: &mut Tx,
+) {
+    let wp = &mut s.look.wallpaper;
+    if wp.generation != generation {
+        return;
+    }
+    if wp.picked.take() == Some(generation) {
+        tx.animated();
+    }
+    land(s, w, h, rgba, light);
 }
 
 fn land(s: &mut State, w: u32, h: u32, rgba: Vec<u8>, light: bool) {
@@ -370,6 +398,42 @@ fn replace(s: &mut State, image: Option<Pixels>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Only the paint the person asked for crossfades in; a background
+    /// repaint (launch, resize, timer) lands at once, and a superseded
+    /// paint is dropped.
+    #[test]
+    fn only_a_picked_picture_crossfades_in() {
+        let mut s = crate::chat::fixtures::test_state();
+        s.prefs.wallpaper = Wallpaper::Aurora;
+        let px = || (1, 1, vec![0u8; 4]);
+
+        reload_picked(&mut s);
+        let picked = s.look.wallpaper.generation;
+        let mut tx = Tx::default();
+        painted(&mut s, picked, px(), true, &mut tx);
+        assert!(crate::workspace::asked_motion(&tx), "a pick crossfades");
+        assert!(s.look.wallpaper.image.is_some());
+
+        reload(&mut s);
+        let background = s.look.wallpaper.generation;
+        let mut tx = Tx::default();
+        painted(&mut s, background, px(), true, &mut tx);
+        assert!(
+            !crate::workspace::asked_motion(&tx),
+            "a repaint lands at once"
+        );
+
+        let serial = s.look.wallpaper.serial;
+        reload_picked(&mut s);
+        let mut tx = Tx::default();
+        painted(&mut s, background, px(), true, &mut tx);
+        assert_eq!(
+            s.look.wallpaper.serial, serial,
+            "a superseded paint is dropped"
+        );
+        assert!(!crate::workspace::asked_motion(&tx));
+    }
 
     /// The composers' matched flight draws over the wallpaper, so it is off
     /// wherever the wallpaper lies over them.
