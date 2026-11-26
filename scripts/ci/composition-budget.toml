@@ -481,7 +481,12 @@ observed_date = "2026-11-17"
 # construction is `FilesystemSkillUsageStore::shared` in `ironclaw_skills`
 # (`skill_usage_assembly.rs` is gone). Measured with
 # `bash scripts/ci/check-composition-budget.sh`.
-loc_ceiling = 34519
+# ✎ 2026-11-26 (zlo/verpin-delegate-context): 34519 -> 34580, observed
+# 34730, zero hidden headroom, pending the owner's sign-off. +51 is
+# pre-existing growth on main (34720 measured before this branch, from the
+# upstream-Rune move); +10 is `RebornRuntime::open_conversation` (`zlo run
+# --thread`), which `new_conversation` now delegates to.
+loc_ceiling = 34580
 # Working slack for in-flight PRs. Deliberately small: the inflow this gate
 # exists to catch was +619 lines, and a tolerance that would have absorbed it
 # is a gate that constrains nothing. A change adding more than this to

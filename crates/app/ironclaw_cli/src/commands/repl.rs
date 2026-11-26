@@ -17,6 +17,7 @@ impl ReplCommand {
         crate::runtime::execute(
             context,
             None,
+            None,
             RuntimeInputOptions {
                 confirm_host_access: self.confirm_host_access,
             },

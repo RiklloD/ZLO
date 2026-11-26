@@ -745,3 +745,78 @@ async fn send_user_message_uses_caller_supplied_skill_context_source() {
 
     runtime.shutdown().await.expect("runtime shutdown");
 }
+
+/// `zlo run --thread <id>`: a later runtime on the same home opens the
+/// conversation an earlier one started, and the model sees its history.
+#[tokio::test]
+async fn open_conversation_continues_an_earlier_runtimes_thread() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let build = |reply: &str, requests: Arc<StdMutex<Vec<_>>>| {
+        let gateway = Arc::new(RecordingGateway {
+            reply: reply.to_string(),
+            requests,
+        });
+        RebornRuntimeInput::from_build_input(
+            crate::deployment::local_filesystem_build_input(
+                "runtime-open-conv-owner",
+                root.path().join("standalone"),
+            )
+            .with_runtime_policy(standalone_runtime_policy()),
+        )
+        .with_identity(RebornRuntimeIdentity {
+            tenant_id: "runtime-open-conv-tenant".to_string(),
+            agent_id: "runtime-open-conv-agent".to_string(),
+            source_binding_id: "runtime-open-conv-source".to_string(),
+            reply_target_binding_id: "runtime-open-conv-reply".to_string(),
+        })
+        .with_poll_settings(PollSettings {
+            interval: Duration::from_millis(10),
+            max_total: RUNTIME_POLL_TIMEOUT,
+        })
+        .with_model_gateway_override(gateway)
+    };
+
+    let first = build_reborn_runtime(build("first reply", Arc::new(StdMutex::new(Vec::new()))))
+        .await
+        .expect("runtime builds");
+    let conversation = first.new_conversation().await.expect("conversation");
+    let reply = tokio::time::timeout(
+        RUNTIME_SEND_TIMEOUT,
+        first.send_user_message(&conversation, "remember the word pelican"),
+    )
+    .await
+    .expect("send finishes")
+    .expect("send succeeds");
+    assert_eq!(reply.status, TurnStatus::Completed);
+    first.shutdown().await.expect("shutdown");
+
+    let requests = Arc::new(StdMutex::new(Vec::new()));
+    let second = build_reborn_runtime(build("second reply", Arc::clone(&requests)))
+        .await
+        .expect("runtime builds again");
+    let reopened = second
+        .open_conversation(conversation.0.as_str())
+        .await
+        .expect("open conversation");
+    assert_eq!(reopened, conversation);
+    let reply = tokio::time::timeout(
+        RUNTIME_SEND_TIMEOUT,
+        second.send_user_message(&reopened, "which word?"),
+    )
+    .await
+    .expect("send finishes")
+    .expect("send succeeds");
+    assert_eq!(reply.status, TurnStatus::Completed);
+    let seen = {
+        let requests = requests.lock().expect("lock");
+        requests[0]
+            .messages
+            .iter()
+            .map(|m| m.content.clone())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert!(seen.contains("pelican"), "history missing: {seen}");
+    assert!(seen.contains("first reply"), "history missing: {seen}");
+    second.shutdown().await.expect("shutdown");
+}

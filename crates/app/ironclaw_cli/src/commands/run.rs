@@ -22,6 +22,11 @@ pub(crate) struct RunCommand {
     /// Confirm trusted-laptop host filesystem access for the unrestricted standalone profile.
     #[arg(long = "confirm-host-access")]
     confirm_host_access: bool,
+
+    /// Continue this conversation (the id `zlo thread:` printed on an
+    /// earlier run) instead of starting a new one.
+    #[arg(long = "thread", value_name = "ID")]
+    thread: Option<String>,
 }
 
 impl RunCommand {
@@ -34,6 +39,7 @@ impl RunCommand {
         crate::runtime::execute(
             context,
             self.message,
+            self.thread,
             RuntimeInputOptions {
                 confirm_host_access: self.confirm_host_access,
             },

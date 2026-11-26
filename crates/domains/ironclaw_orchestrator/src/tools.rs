@@ -42,7 +42,7 @@ fn target_schema() -> Value {
 
 /// `environment` on every tool that can run on a linked machine.
 fn environment_prop() -> Value {
-    json!({"type": "string", "description": "Run on a linked machine (id or label from t3_capabilities' environments); omit for this machine. t3_delegate also takes 'auto': the machine with the most headroom."})
+    json!({"type": "string", "description": "Run on a linked machine (id or label from t3_capabilities' environments); omit for this machine. t3_delegate also takes 'auto': the machine with the most headroom. On another machine, context='inherit' sends this conversation along as text, and this thread's git folder travels too where the environment supports it (Verpin cloud): its pushed base plus the unpushed commits, uncommitted and untracked files (secrets like .env are left out)."})
 }
 
 /// Add `environment` to a tool schema's properties.
@@ -67,7 +67,7 @@ pub const TOOLS: [ToolSpec; 8] = [
                 "type": "object",
                 "properties": {
                     "task": {"type": "string", "description": "The child's task. With context='brief' it is all the child knows, so make it self-contained."},
-                    "context": {"type": "string", "enum": ["inherit", "brief"], "description": "inherit: the child also gets this conversation so far (same profile). brief (default): only the task."},
+                    "context": {"type": "string", "enum": ["inherit", "brief"], "description": "inherit: the child also gets this conversation so far (same profile; on another environment it travels as text with the same provider/model). brief (default): only the task."},
                     "isolation": {"type": "string", "enum": ["shared", "worktree"], "description": "shared (default): the child works in this thread's folder. worktree: its own git worktree and branch from this folder's committed HEAD; uncommitted edits here are not in it."},
                     "title": {"type": "string", "description": "Short label shown in the UI."},
                     "role": {"type": "string", "enum": ["implementation", "research", "review", "design", "test", "general"]},

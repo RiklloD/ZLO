@@ -87,10 +87,30 @@ impl<'a> Git<'a> {
     /// set), stderr separately and short. For outputs past [`Self::run`]'s
     /// preview (diffs, logs, long statuses), with the same hardening.
     pub(crate) async fn capture(&self, dir: &Path, args: &[&str], max: usize) -> Result<Captured> {
+        self.capture_with_index(dir, None, args, max).await
+    }
+
+    /// [`Self::capture`] with `GIT_INDEX_FILE` pointed at `index` (a scratch
+    /// index, so the repository's own index is never touched).
+    pub(crate) async fn capture_with_index(
+        &self,
+        dir: &Path,
+        index: Option<&Path>,
+        args: &[&str],
+        max: usize,
+    ) -> Result<Captured> {
+        let line = match index {
+            Some(index) => format!(
+                "GIT_INDEX_FILE={} {}",
+                sh_quote(&path_arg(index)),
+                line(args)
+            ),
+            None => line(args),
+        };
         let mut process = self
             .runner
             .spawn(HostCommand {
-                line: line(args),
+                line,
                 workdir: dir.to_path_buf(),
                 timeout: GIT_TIMEOUT,
             })
