@@ -229,7 +229,8 @@ pub fn refresh_button(k: &Kit, on_press: impl Fn(&mut State) + 'static) -> El {
 /// reloading after the press) and takes no press meanwhile, instead of
 /// sitting still until the rows land. Key it as [`controls::keyed_refresh`]
 /// is keyed. The breath runs at 15 fps only while loading and holds still
-/// under Reduce Motion.
+/// under Reduce Motion. It stands 24 pt tall, the height of the header
+/// controls it sits beside (segmented switches, push buttons).
 pub fn refresh_busy(
     k: &Kit,
     key: &str,
@@ -244,10 +245,11 @@ pub fn refresh_busy(
         16.,
         ink,
     );
-    crate::design::kit::glyph_button(
+    crate::design::kit::glyph_button_sized(
         k,
         key,
         IconButtonVariant::Ghost,
+        ControlSize::Regular,
         "Refresh",
         glyph,
         move |s: &mut State, _: &mut Tx| {
@@ -423,8 +425,10 @@ pub fn segmented(
 
 /// A page's tab bar (Operator's tabs, Memory's stores, Files' mounts, a
 /// provider list's kinds): the kit's segmented control, so every switch
-/// between views of one page looks and moves the same way. The accent stays
-/// for the page's one primary action.
+/// between views of one page looks and moves the same way: the raised
+/// highlight glides, resizing as it goes, from the old tab to the picked one
+/// (the kit's equal-column indicator, moving on its own leaf). The accent
+/// stays for the page's one primary action.
 pub fn tab_bar<T: Copy + PartialEq + 'static>(
     k: &Kit,
     key: &str,
@@ -432,20 +436,49 @@ pub fn tab_bar<T: Copy + PartialEq + 'static>(
     current: T,
     on_pick: impl Fn(&mut State, T) + Clone + 'static,
 ) -> El {
+    tab_bar_with(k, key, tabs, current, on_pick, true)
+}
+
+/// [`tab_bar`] whose highlight lands on the picked tab without gliding,
+/// for a page that rebuilds the bar elsewhere in its tree on some tabs
+/// (Operator's Logs puts it in a virtual list's first row), where a glide
+/// would remount and jump. It looks the same at rest.
+pub fn tab_bar_still<T: Copy + PartialEq + 'static>(
+    k: &Kit,
+    key: &str,
+    tabs: &[(T, &str)],
+    current: T,
+    on_pick: impl Fn(&mut State, T) + Clone + 'static,
+) -> El {
+    tab_bar_with(k, key, tabs, current, on_pick, false)
+}
+
+fn tab_bar_with<T: Copy + PartialEq + 'static>(
+    k: &Kit,
+    key: &str,
+    tabs: &[(T, &str)],
+    current: T,
+    on_pick: impl Fn(&mut State, T) + Clone + 'static,
+    glide: bool,
+) -> El {
     let labels: Vec<&str> = tabs.iter().map(|(_, l)| *l).collect();
     let values: Vec<T> = tabs.iter().map(|(t, _)| *t).collect();
     let selected = values.iter().position(|t| *t == current).unwrap_or(0);
     // Equal segments at the widest label's width while the page has room,
     // sharing the column's width when it does not (a narrow window, a large
-    // UI font): the bar never runs off the page.
-    let seg = SegmentedControl::new(&labels, Some(selected))
-        .width(None)
+    // UI font): the bar never runs off the page. Equal columns filling the
+    // wrapper, not the kit's fill mode: that one paints the picked segment
+    // itself, so a switch jumps (which `tab_bar_still` wants).
+    let seg = SegmentedControl::new(&labels, Some(selected));
+    let seg = if glide { seg.fit() } else { seg.width(None) };
+    let seg = seg
         .on_pick(move |s: &mut State, ix, _: &mut Tx| {
             if let Some(t) = values.get(ix) {
                 on_pick(s, *t);
             }
         })
-        .build(k);
+        .build(k)
+        .w_full();
     let widest = labels.iter().map(|l| l.chars().count()).max().unwrap_or(0) as f32;
     let natural = labels.len() as f32 * (widest * 7.4 + 28.) * crate::design::styles::type_scale();
     el().key(key.to_string())

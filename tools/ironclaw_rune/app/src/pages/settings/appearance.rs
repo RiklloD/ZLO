@@ -208,7 +208,7 @@ fn set_theme(s: &mut State, id: &str, tx: &mut Tx) {
 
 fn set_wallpaper(s: &mut State, choice: Wallpaper) {
     s.update_prefs(|p| p.wallpaper = choice);
-    look::reload(s);
+    look::reload_picked(s);
 }
 
 /// The accent row: the theme's own accent, then Zeron's seven presets.
@@ -533,7 +533,7 @@ pub fn view(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
         |s, v, _| {
             let v = v.to_string();
             s.update_prefs(|p| p.wallpaper_effect = v);
-            look::reload(s);
+            look::reload_picked(s);
         },
     );
     // shalldie's vscode-background settings: where, how strong, how it
@@ -580,7 +580,7 @@ pub fn view(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
         |s, v, _| {
             let v = v.to_string();
             s.update_prefs(|p| p.wallpaper_fit = v);
-            look::reload(s);
+            look::reload_picked(s);
         },
     );
     let folder = matches!(prefs.wallpaper, Wallpaper::Folder { .. });

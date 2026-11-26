@@ -7,8 +7,9 @@
 //! area's size in points, so the effect's dots stay crisp, and land in one
 //! `rune::Pixels`. Nothing runs while the app is idle; a resize repaints once
 //! the area has been still for [`SETTLE`]; opacity and fit change for free.
-//! A new picture crossfades in over the old one (a presence fade on its
-//! key); a folder can move on to its next picture on a timer.
+//! A picture the person just picked crossfades in over the old one (a
+//! presence fade on its key, asked by [`reload_picked`]); any other repaint
+//! lands at once. A folder can move on to its next picture on a timer.
 //!
 //! Rune does the compositing itself: the layer's opacity
 //! applies to the composited pair (an isolated group), so a crossfade never
@@ -54,6 +55,13 @@ pub struct WallpaperState {
     rotation: u64,
     /// The palette brightness the current picture was painted for.
     painted_light: Option<bool>,
+    /// The person just picked a picture, effect or fit: the next paint that
+    /// starts is theirs and crossfades in. Any other paint (launch, resize,
+    /// folder timer, palette) lands at once, as background commits do.
+    asked: bool,
+    /// The showing picture landed on the person's pick and is still
+    /// crossfading over `previous`; otherwise it carries no transition.
+    fading: bool,
 }
 
 impl WallpaperState {}
@@ -122,10 +130,12 @@ pub fn layer_rounded(s: &State, area: &str, radius: f32) -> Option<El> {
         layer = layer.child(picture(old, w.serial.wrapping_sub(1)));
     }
     if let Some(image) = &w.image {
-        layer = layer.child(
-            picture(image, w.serial)
-                .transition(Transition::opacity().springs(SpringPair::new(CROSSFADE, CROSSFADE))),
-        );
+        let fade = if w.fading {
+            Transition::opacity().springs(SpringPair::new(CROSSFADE, CROSSFADE))
+        } else {
+            Transition::none()
+        };
+        layer = layer.child(picture(image, w.serial).transition(fade));
     }
     Some(layer)
 }
@@ -153,10 +163,22 @@ fn measured(s: &mut State, width: f32, height: f32) -> bool {
 pub fn reload(s: &mut State) {
     rotate(s);
     if s.prefs.wallpaper == Wallpaper::None {
-        replace(s, None);
+        // Supersede any paint still in flight, so it cannot land later.
+        let w = &mut s.look.wallpaper;
+        w.generation += 1;
+        w.asked = false;
+        replace(s, None, false);
         return;
     }
     schedule(s, Duration::ZERO);
+}
+
+/// [`reload`] for a picture, effect or fit the person just picked: the
+/// paint that runs for it crossfades over the old picture instead of
+/// swapping at once, even when it waits for the area's first layout.
+pub fn reload_picked(s: &mut State) {
+    s.look.wallpaper.asked = s.prefs.wallpaper != Wallpaper::None;
+    reload(s);
 }
 
 /// Re-arm the folder timer (`wallpaper_interval` minutes): each tick moves
@@ -271,22 +293,39 @@ impl Job {
 fn paint_now(s: &mut State, generation: u64) {
     let Some(job) = Job::of(s) else { return };
     let light = job.light;
+    // This paint answers the person's pick, if one is waiting.
+    let asked = std::mem::take(&mut s.look.wallpaper.asked);
     jobs::blocking(
         s,
         move || job.run(),
-        move |s, (w, h, rgba), _tx| {
-            if s.look.wallpaper.generation == generation {
-                land(s, w, h, rgba, light);
-            }
-        },
+        move |s, (w, h, rgba), tx| painted(s, generation, asked, (w, h, rgba), light, tx),
     );
 }
 
-fn land(s: &mut State, w: u32, h: u32, rgba: Vec<u8>, light: bool) {
+/// A paint finished: the latest request's picture lands, crossfading when
+/// the person asked for it (a job reply lands at once otherwise).
+fn painted(
+    s: &mut State,
+    generation: u64,
+    asked: bool,
+    (w, h, rgba): (u32, u32, Vec<u8>),
+    light: bool,
+    tx: &mut Tx,
+) {
+    if s.look.wallpaper.generation != generation {
+        return;
+    }
+    if asked {
+        tx.animated();
+    }
+    land(s, w, h, rgba, light, asked);
+}
+
+fn land(s: &mut State, w: u32, h: u32, rgba: Vec<u8>, light: bool, fade: bool) {
     let pixels = Pixels::new();
     pixels.set(w, h, rgba);
     s.look.wallpaper.painted_light = Some(light);
-    replace(s, Some(pixels));
+    replace(s, Some(pixels), fade);
 }
 
 /// Paint at `size` on this thread and show it at once. For headless
@@ -296,7 +335,7 @@ pub fn paint_blocking(s: &mut State, size: (u32, u32)) {
     if let Some(job) = Job::of(s) {
         let light = job.light;
         let (w, h, rgba) = job.run();
-        land(s, w, h, rgba, light);
+        land(s, w, h, rgba, light, false);
     }
 }
 
@@ -339,37 +378,85 @@ fn pick_from(dir: &Path, shuffle: u64) -> Option<PathBuf> {
     Some(files.swap_remove(ix))
 }
 
-/// Swap the picture. The outgoing one stays as `previous` for the crossfade
-/// and is let go once the new one has landed.
-fn replace(s: &mut State, image: Option<Pixels>) {
+/// Swap the picture. With `fade` (the person's pick) the outgoing one
+/// stays as `previous` under the crossfade and is let go once the new one
+/// has landed; otherwise the new one simply replaces it.
+fn replace(s: &mut State, image: Option<Pixels>, fade: bool) {
     let w = &mut s.look.wallpaper;
     let incoming = image.is_some();
     let outgoing = std::mem::replace(&mut w.image, image);
-    match outgoing {
-        Some(old) if incoming => {
-            w.previous = Some(old);
-            w.serial += 1;
-            let serial = w.serial;
-            jobs::after(s, RELEASE_AFTER, move |s, _| {
-                if s.look.wallpaper.serial == serial {
-                    s.look.wallpaper.previous = None;
-                }
-            });
-        }
-        _ => {
-            if incoming {
-                w.serial += 1;
-            } else {
-                w.painted_light = None;
+    w.fading = fade && incoming;
+    w.previous = if w.fading { outgoing } else { None };
+    if incoming {
+        w.serial += 1;
+    } else {
+        w.painted_light = None;
+    }
+    if w.fading {
+        let serial = w.serial;
+        jobs::after(s, RELEASE_AFTER, move |s, _| {
+            let w = &mut s.look.wallpaper;
+            if w.serial == serial {
+                // Settled: the picture drops its crossfade, so a later swap
+                // batched with a click cannot inherit it.
+                w.previous = None;
+                w.fading = false;
             }
-            w.previous = None;
-        }
+        });
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Only the paint started for the person's pick crossfades in, even
+    /// when it waits for the area's first layout; a background repaint
+    /// lands at once over nothing; picking None drops a paint in flight.
+    #[test]
+    fn only_a_picked_picture_crossfades_in() {
+        let mut s = crate::chat::fixtures::test_state();
+        s.prefs.wallpaper = Wallpaper::Aurora;
+        let px = || (1, 1, vec![0u8; 4]);
+
+        // Picked before the area is measured: no paint yet, the ask waits
+        // for the one the first layout starts.
+        reload_picked(&mut s);
+        assert!(
+            s.look.wallpaper.asked,
+            "the ask survives an unmeasured area"
+        );
+        assert!(measured(&mut s, 200., 200.));
+        assert!(!s.look.wallpaper.asked, "the first layout's paint takes it");
+        let first = s.look.wallpaper.generation;
+        let mut tx = Tx::default();
+        painted(&mut s, first, true, px(), true, &mut tx);
+        assert!(crate::workspace::asked_motion(&tx), "a pick crossfades");
+        assert!(s.look.wallpaper.fading);
+
+        // A background repaint: no motion, no transition, no old picture.
+        let mut tx = Tx::default();
+        painted(&mut s, first, false, px(), true, &mut tx);
+        let w = &s.look.wallpaper;
+        assert!(
+            !crate::workspace::asked_motion(&tx),
+            "a repaint lands at once"
+        );
+        assert!(!w.fading && w.previous.is_none());
+
+        // None supersedes the pick's paint still decoding.
+        reload_picked(&mut s);
+        let decoding = s.look.wallpaper.generation;
+        s.prefs.wallpaper = Wallpaper::None;
+        reload_picked(&mut s);
+        let mut tx = Tx::default();
+        painted(&mut s, decoding, true, px(), true, &mut tx);
+        assert!(
+            s.look.wallpaper.image.is_none(),
+            "the cancelled picture never lands"
+        );
+        assert!(!crate::workspace::asked_motion(&tx));
+    }
 
     /// The composers' matched flight draws over the wallpaper, so it is off
     /// wherever the wallpaper lies over them.

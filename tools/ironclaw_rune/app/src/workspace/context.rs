@@ -10,7 +10,7 @@ use std::collections::HashSet;
 
 use crate::design::kit::Spinner;
 use rune::{Color, El, col, el, row};
-use rune_kit::{ControlSize, Kit, Placement};
+use rune_kit::{ControlSize, Kit};
 use zlo_client::orchestration::ForkOptions;
 use zlo_client::usage::{
     ContextCategory, ContextLevel, ContextSource, ContextToolOwner, ThreadContextReport,
@@ -320,14 +320,16 @@ pub(super) fn meter(s: &State, value: String, k: &Kit, layer: &mut Vec<El>) -> E
         p.text_faint
     };
     if open {
-        layer.push(rune_kit::popover::anchored(
-            k,
+        // Hung above the meter as `rune_kit::popover::anchored` hangs it, but
+        // popping in, rising into place, and out faster rather than opening
+        // at once.
+        layer.push(
             el().modal(true, |s: &mut State| s.workspace.context.open = false)
-                .child(popover(s)),
-            "status-context",
-            Placement::TopEnd,
-            6.,
-        ));
+                .child(popover(s))
+                .anchored_fit("status-context", rune::Side::Top, rune::Align::End, 6.)
+                .transition(crate::design::motion::pop(6.))
+                .token_motion(k.motion.overlay),
+        );
     }
     row()
         .key("status-context")
