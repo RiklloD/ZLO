@@ -21,7 +21,7 @@ use super::*;
 
 const FAKE_KEY: &str = "sm_fake_key_never_shown";
 
-struct Inner;
+pub(crate) struct Inner;
 
 #[async_trait]
 impl ProductSurface for Inner {
@@ -54,7 +54,7 @@ impl ProductSurface for Inner {
 
 /// An in-memory document store keyed by caller user, with hash-checked writes.
 #[derive(Default)]
-struct FakeDocuments {
+pub(crate) struct FakeDocuments {
     docs: Mutex<HashMap<(String, String), String>>,
     calls: Mutex<Vec<String>>,
 }

@@ -438,6 +438,28 @@ impl MemoryPageSurface {
     }
 }
 
+/// The Memory page and Settings → Keys over `inner`, and the CLI memory
+/// tools on `bridge` (answered by the same page surface).
+pub fn wrap(
+    inner: Arc<dyn ProductSurface>,
+    documents: Option<Arc<dyn MemoryDocumentsSource>>,
+    supermemory: Arc<Supermemory>,
+    profiles: Option<Arc<Engine>>,
+    secrets: Arc<dyn ironclaw_product_contracts::operator_secrets::OperatorSecretValueStore>,
+    bridge: Option<&ironclaw_cli_providers::bridge::CliBridge>,
+) -> Arc<dyn ProductSurface> {
+    let page: Arc<dyn ProductSurface> = Arc::new(MemoryPageSurface::new(
+        inner,
+        documents,
+        Some(Arc::clone(&supermemory)),
+        profiles,
+    ));
+    if let Some(bridge) = bridge {
+        crate::memory_bridge::register(bridge, Arc::clone(&page));
+    }
+    crate::service_keys::ServiceKeysSurface::for_host(page, supermemory, secrets)
+}
+
 #[async_trait]
 impl ProductSurface for MemoryPageSurface {
     async fn invoke(
@@ -586,4 +608,4 @@ fn map_supermemory_error(error: SupermemoryError) -> ProductSurfaceError {
 
 #[cfg(test)]
 #[path = "memory_page_tests.rs"]
-mod tests;
+pub(crate) mod tests;

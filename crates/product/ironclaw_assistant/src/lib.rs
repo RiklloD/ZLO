@@ -59,6 +59,7 @@ pub mod inbox_hints;
 pub mod inspector_store;
 mod ledger;
 mod lifecycle;
+mod memory_bridge;
 pub mod memory_page;
 pub mod memory_scheduled_ops;
 mod memory_wiki;

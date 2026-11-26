@@ -6,7 +6,7 @@ use chrono::Utc;
 use async_trait::async_trait;
 use ironclaw_assistant::{
     ProjectScopedAttachmentReader, ProjectScopedFilesystemReader, RebornAutomationProductService,
-    RebornServices as ProductRebornServices, UnboundTurnService, service_keys::ServiceKeysSurface,
+    RebornServices as ProductRebornServices, UnboundTurnService,
 };
 use ironclaw_attachments::ProjectScopedAttachmentLander;
 use ironclaw_auth::ChannelConnectionService;
@@ -379,25 +379,25 @@ pub(crate) fn build_product_surface_with_channel_connection(
         runtime.computer_use.clone(),
         readiness,
     );
-    // Usage page windows (polled on demand); the same operator secrets back Settings → Keys.
+    // Subscription usage windows for the Usage page (polled on demand).
     let secrets = crate::RuntimeOperatorSecretValueStore::shared(runtime.secret_store());
     let usage = ironclaw_usage::UsageMonitor::for_host(Arc::clone(&secrets));
     let surface: Arc<dyn ProductSurface> = Arc::new(
         ironclaw_assistant::usage::UsageProductSurface::new(surface, Arc::new(usage)),
     );
-    // The Memory page (local documents + Supermemory) and the hooks view.
+    // Memory page (local + Supermemory), Settings → Keys, CLI memory tools, hooks.
     let parts = runtime.memory_page.clone();
-    let surface: Arc<dyn ProductSurface> =
-        Arc::new(ironclaw_assistant::memory_page::MemoryPageSurface::new(
-            surface,
-            parts.documents,
-            Some(Arc::clone(&parts.supermemory)),
-            runtime.orchestrator.clone(),
-        ));
+    let surface = ironclaw_assistant::memory_page::wrap(
+        surface,
+        parts.documents,
+        parts.supermemory,
+        runtime.orchestrator.clone(),
+        secrets,
+        runtime.cli_bridge.as_deref(),
+    );
     let surface: Arc<dyn ProductSurface> = Arc::new(
         ironclaw_assistant::hooks_page::HooksPageSurface::new(surface, parts.hooks),
     );
-    let surface = ServiceKeysSurface::for_host(surface, Arc::clone(&parts.supermemory), secrets);
     // Plugin UI slots: listed from the live active set, rendered through the
     // product-origin capability path.
     let surface: Arc<dyn ProductSurface> =
