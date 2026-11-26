@@ -425,8 +425,10 @@ pub fn segmented(
 
 /// A page's tab bar (Operator's tabs, Memory's stores, Files' mounts, a
 /// provider list's kinds): the kit's segmented control, so every switch
-/// between views of one page looks and moves the same way. The accent stays
-/// for the page's one primary action.
+/// between views of one page looks and moves the same way: the raised
+/// highlight glides, resizing as it goes, from the old tab to the picked one
+/// (the kit's equal-column indicator, moving on its own leaf). The accent
+/// stays for the page's one primary action.
 pub fn tab_bar<T: Copy + PartialEq + 'static>(
     k: &Kit,
     key: &str,
@@ -439,15 +441,18 @@ pub fn tab_bar<T: Copy + PartialEq + 'static>(
     let selected = values.iter().position(|t| *t == current).unwrap_or(0);
     // Equal segments at the widest label's width while the page has room,
     // sharing the column's width when it does not (a narrow window, a large
-    // UI font): the bar never runs off the page.
+    // UI font): the bar never runs off the page. Equal columns filling the
+    // wrapper, not the kit's fill mode: that one paints the picked segment
+    // itself, so a switch jumps.
     let seg = SegmentedControl::new(&labels, Some(selected))
-        .width(None)
+        .fit()
         .on_pick(move |s: &mut State, ix, _: &mut Tx| {
             if let Some(t) = values.get(ix) {
                 on_pick(s, *t);
             }
         })
-        .build(k);
+        .build(k)
+        .w_full();
     let widest = labels.iter().map(|l| l.chars().count()).max().unwrap_or(0) as f32;
     let natural = labels.len() as f32 * (widest * 7.4 + 28.) * crate::design::styles::type_scale();
     el().key(key.to_string())
