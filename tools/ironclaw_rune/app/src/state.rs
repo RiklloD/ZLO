@@ -43,6 +43,8 @@ pub enum Page {
     Operator,
     Usage,
     Memory,
+    /// Settings → Keys (`pages::keys`).
+    Keys,
     Hooks,
     /// Settings → Computers (`pages::computers`).
     Computers,

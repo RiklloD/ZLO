@@ -732,6 +732,7 @@ pub fn settings_groups(s: &State) -> Vec<(&'static str, Vec<NavItem>)> {
             "Agent",
             vec![
                 (Page::Providers, &i::BOT, "Providers"),
+                (Page::Keys, &i::KEY_ROUND, "Keys"),
                 (Page::Profiles, &i::USER, "Profiles"),
                 (Page::Memory, &i::FILE_TEXT, "Memory"),
                 (Page::Skills, &i::BOOK_OPEN, "Skills"),

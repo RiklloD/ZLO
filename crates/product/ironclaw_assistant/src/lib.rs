@@ -59,8 +59,10 @@ pub mod inbox_hints;
 pub mod inspector_store;
 mod ledger;
 mod lifecycle;
+mod memory_bridge;
 pub mod memory_page;
 pub mod memory_scheduled_ops;
+mod memory_wiki;
 mod model_channel_delivery;
 pub mod native_questions;
 mod notification_channel_resolution;
@@ -74,9 +76,10 @@ mod project_create_capability;
 pub mod projection;
 mod reborn_services;
 mod run_delivery;
-pub mod skill_listing_page;
 /// The Skills page's product service; consumer: `ironclaw_composition`
 /// (built over the deployment's skill stores).
+pub mod service_keys;
+pub mod skill_listing_page;
 pub mod skills_product_service;
 pub mod supermemory;
 pub mod usage;

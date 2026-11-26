@@ -141,6 +141,33 @@ impl SupermemoryClient {
         Ok(key)
     }
 
+    /// Drop the cached key so the next use reads the store again (after
+    /// the stored key was set or removed).
+    pub fn forget_cached_key(&self) {
+        *self
+            .key_cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
+    }
+
+    /// One cheap authenticated call with `key` (list one document): proves
+    /// the key before it is stored.
+    pub async fn verify_key(
+        &self,
+        caller: &SupermemoryCaller,
+        key: &SecretString,
+    ) -> Result<(), SupermemoryError> {
+        self.call(
+            caller,
+            key,
+            NetworkMethod::Post,
+            "/v3/documents/list",
+            Some(&serde_json::json!({ "limit": 1, "page": 1 })),
+        )
+        .await
+        .map(|_| ())
+    }
+
     pub(crate) async fn add_document(
         &self,
         caller: &SupermemoryCaller,
@@ -264,13 +291,26 @@ impl SupermemoryClient {
         };
         let mut attempt = 0;
         loop {
-            let response = self
+            let response = match self
                 .egress
                 .execute(self.request(caller, key, method, path, body.clone()))
                 .await
-                .map_err(|error| SupermemoryError::Transport {
-                    reason: error.to_string(),
-                })?;
+            {
+                Ok(response) => response,
+                Err(error) => {
+                    let reason = error.to_string();
+                    // An oversized 401/403 body still carries its status:
+                    // a refused key must stay refused, never "unreachable".
+                    return Err(match error.into_partial_response() {
+                        Some(partial) if matches!(partial.status, 401 | 403) => {
+                            SupermemoryError::Unauthorized {
+                                status: partial.status,
+                            }
+                        }
+                        _ => SupermemoryError::Transport { reason },
+                    });
+                }
+            };
             match response.status {
                 // A delete may answer 204 with no body.
                 200..=299 if response.body.is_empty() => return Ok(Value::Null),

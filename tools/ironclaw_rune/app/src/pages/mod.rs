@@ -10,6 +10,7 @@ pub mod extensions;
 pub mod files;
 pub mod flash;
 pub mod hooks;
+pub mod keys;
 pub mod memory;
 #[cfg(test)]
 pub(crate) mod motion_b_tests;
@@ -34,6 +35,7 @@ pub struct PagesState {
     pub operator: operator::OperatorState,
     pub skills: skills::SkillsState,
     pub hooks: hooks::HooksState,
+    pub keys: keys::KeysState,
     pub automations: automations::AutomationsState,
     pub notifications: notifications::NotificationsState,
     pub files: files::FilesState,
@@ -64,6 +66,7 @@ pub fn opened(s: &mut State, page: Page) {
         Page::Usage => usage::opened(s),
         Page::Memory => memory::opened(s),
         Page::Hooks => hooks::opened(s),
+        Page::Keys => keys::opened(s),
         Page::Computers => computers::opened(s),
     }
 }
@@ -87,6 +90,7 @@ pub fn view(s: &State, page: Page, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<
         Page::Usage => usage::view(s, cx, k, layer),
         Page::Memory => memory::view(s, cx, k, layer),
         Page::Hooks => hooks::view(s, cx, k, layer),
+        Page::Keys => keys::view(s, cx, k, layer),
         Page::Computers => computers::view(s, cx, k, layer),
     }
 }

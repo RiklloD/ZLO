@@ -11,7 +11,10 @@
 //!    t3code runs them in its terminal; or,
 //!    instead of a CLI, a provider (ChatGPT plan, an API key) that
 //!    IronClaw's own agent runs on (`agents.rs`).
-//! 3. **Projects** — folders Claude Code and Codex sessions ran in, the
+//! 3. **Memory** — where agents remember: a Supermemory key (tested,
+//!    or the one Hermes holds) or a local knowledge wiki (`memory.rs`);
+//!    one of the two is required.
+//! 4. **Projects** — folders Claude Code and Codex sessions ran in, the
 //!    every one picked, imported as threads (`projects.rs`); the
 //!    pick limits the session import to those folders.
 //!
@@ -28,6 +31,7 @@ pub mod fixtures;
 pub mod gateway;
 #[cfg(test)]
 mod layout_tests;
+mod memory;
 #[cfg(test)]
 mod motion_tests;
 mod projects;
@@ -43,6 +47,7 @@ use serde::{Deserialize, Serialize};
 use crate::state::{Page, State};
 
 pub use agents::AgentsState;
+pub use memory::MemoryStepState;
 pub use projects::ProjectsState;
 
 /// t3code's `FirstRunDecision`.
@@ -61,12 +66,14 @@ pub enum Step {
     #[default]
     Connect,
     Agents,
+    Memory,
     Projects,
 }
 
-pub const STEPS: [(Step, &str); 3] = [
+pub const STEPS: [(Step, &str); 4] = [
     (Step::Connect, "Connect"),
     (Step::Agents, "Agents"),
+    (Step::Memory, "Memory"),
     (Step::Projects, "Projects"),
 ];
 
@@ -75,7 +82,8 @@ impl Step {
         match self {
             Step::Connect => 0,
             Step::Agents => 1,
-            Step::Projects => 2,
+            Step::Memory => 2,
+            Step::Projects => 3,
         }
     }
 }
@@ -99,6 +107,7 @@ pub struct OnboardingState {
     pub shown_at: Option<std::time::Instant>,
     pub connect: ConnectState,
     pub agents: AgentsState,
+    pub memory: MemoryStepState,
     pub projects: ProjectsState,
     /// Finishing: the record is being written.
     pub finishing: bool,
@@ -235,6 +244,7 @@ pub fn wizard_shown(s: &State) -> bool {
 pub fn computer_switched(s: &mut State) {
     projects::reset(s);
     agents::reset(s);
+    memory::reset(s);
 }
 
 pub fn go_to(s: &mut State, step: Step) {
@@ -259,6 +269,7 @@ pub fn go_to(s: &mut State, step: Step) {
     match step {
         Step::Connect => {}
         Step::Agents => agents::entered(s),
+        Step::Memory => memory::entered(s),
         Step::Projects => projects::entered(s),
     }
 }
@@ -483,7 +494,7 @@ mod tests {
     #[test]
     fn steps_count_up_in_order() {
         let order: Vec<usize> = STEPS.iter().map(|(s, _)| s.index()).collect();
-        assert_eq!(order, vec![0, 1, 2]);
+        assert_eq!(order, vec![0, 1, 2, 3]);
     }
 
     #[test]

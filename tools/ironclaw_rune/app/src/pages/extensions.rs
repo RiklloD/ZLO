@@ -265,6 +265,15 @@ fn remove(s: &mut State, id: String) {
     );
 }
 
+/// Open `id`'s setup panel (Settings → Keys sends people here); unlike the
+/// card's own button, never closes an open one.
+pub fn open_setup_for(s: &mut State, id: String) {
+    if st(s).setup.as_ref().is_some_and(|x| x.id == id) {
+        return;
+    }
+    open_setup(s, id);
+}
+
 fn open_setup(s: &mut State, id: String) {
     let ext = st(s);
     if ext.setup.as_ref().is_some_and(|x| x.id == id) {

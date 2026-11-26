@@ -380,21 +380,21 @@ pub(crate) fn build_product_surface_with_channel_connection(
         readiness,
     );
     // Subscription usage windows for the Usage page (polled on demand).
-    let usage = ironclaw_usage::UsageMonitor::for_host(
-        crate::RuntimeOperatorSecretValueStore::shared(runtime.secret_store()),
-    );
+    let secrets = crate::RuntimeOperatorSecretValueStore::shared(runtime.secret_store());
+    let usage = ironclaw_usage::UsageMonitor::for_host(Arc::clone(&secrets));
     let surface: Arc<dyn ProductSurface> = Arc::new(
         ironclaw_assistant::usage::UsageProductSurface::new(surface, Arc::new(usage)),
     );
-    // The Memory page (local documents + Supermemory) and the hooks view.
+    // Memory page (local + Supermemory), Settings → Keys, CLI memory tools, hooks.
     let parts = runtime.memory_page.clone();
-    let surface: Arc<dyn ProductSurface> =
-        Arc::new(ironclaw_assistant::memory_page::MemoryPageSurface::new(
-            surface,
-            parts.documents,
-            Some(parts.supermemory),
-            runtime.orchestrator.clone(),
-        ));
+    let surface = ironclaw_assistant::memory_page::wrap(
+        surface,
+        parts.documents,
+        parts.supermemory,
+        runtime.orchestrator.clone(),
+        secrets,
+        runtime.cli_bridge.as_deref(),
+    );
     let surface: Arc<dyn ProductSurface> = Arc::new(
         ironclaw_assistant::hooks_page::HooksPageSurface::new(surface, parts.hooks),
     );

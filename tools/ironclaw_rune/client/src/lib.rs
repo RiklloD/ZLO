@@ -18,6 +18,7 @@ mod error;
 mod history_calls;
 mod inbox_calls;
 mod inbox_stream;
+mod key_calls;
 pub mod keychain;
 mod memory_calls;
 pub mod mentions;
@@ -64,5 +65,5 @@ pub use ironclaw_product_contracts::outbound as contract;
 pub use ironclaw_product_contracts::{
     environment_access, history, hooks_catalog, inbound_requests, inbox, memory_page,
     notification_inbox, operator_llm, package_lifecycle, peer, product_wire, profiles, self_update,
-    session_import, skill_listing, task_models, workspace_views,
+    service_keys, session_import, skill_listing, task_models, workspace_views,
 };

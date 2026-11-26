@@ -192,3 +192,23 @@ pub fn toast(s: &mut State) {
         generation: crate::jobs::Generation::unique(),
     });
 }
+
+/// `--scene onboarding-memory`: no key yet, one found in Hermes; no wiki.
+pub fn memory(s: &mut State) {
+    base(s, Step::Memory);
+    let m = &mut s.onboarding.memory;
+    m.loaded = true;
+    m.key = Some(zlo_client::service_keys::ServiceKeyStatus {
+        id: "supermemory_api_key".into(),
+        label: "Supermemory".into(),
+        purpose: "Cloud memory.".into(),
+        docs_url: Some("https://console.supermemory.ai".into()),
+        stored: false,
+        import_from: Some("Hermes (10 profiles)".into()),
+    });
+    m.wiki = Some(zlo_client::memory_page::MemoryWikiStatus {
+        available: true,
+        initialized: false,
+        pages: 0,
+    });
+}

@@ -545,7 +545,7 @@ pub fn view(s: &State, k: &Kit) -> StepView {
     StepView::new(body.child(providers::section(s, k))).action(
         button_sized("Continue", Look::Primary, Size::Small)
             .icon(&crate::icons::ARROW_RIGHT)
-            .on_press(|s: &mut State| super::go_to(s, super::Step::Projects))
+            .on_press(|s: &mut State| super::go_to(s, super::Step::Memory))
             .build(k)
             .key("agents-continue")
             .press_scale(motion::PRESS),

@@ -44,11 +44,25 @@ fn load_with(s: &mut State, shown: bool) {
                 .map(|list| {
                     list.profiles
                         .into_iter()
+                        // The `default` profile without its own container
+                        // is the "Default" choice itself: one chip, not two.
+                        .filter(|p| p.profile_id != "default" || p.settings.supermemory.is_some())
                         .map(|p| (p.profile_id, p.settings.display_name))
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
             let status = c.supermemory_status(profile.as_deref()).await?;
+            let import = if status.key_configured {
+                None
+            } else {
+                // silent-ok: Keys is operator-only; a non-operator sees just the Keys button.
+                c.service_keys().await.ok().and_then(|list| {
+                    list.keys
+                        .into_iter()
+                        .find(|key| key.id == SUPERMEMORY_KEY_ID)
+                        .and_then(|key| key.import_from)
+                })
+            };
             let page = if status.active {
                 Some(
                     c.supermemory_documents(profile.as_deref(), container.as_deref(), 1)
@@ -57,7 +71,7 @@ fn load_with(s: &mut State, shown: bool) {
             } else {
                 None
             };
-            Ok((profiles, status, page))
+            Ok((profiles, status, page, import))
         },
         move |s, result, tx| {
             if shown {
@@ -69,7 +83,8 @@ fn load_with(s: &mut State, shown: bool) {
                 return;
             }
             match result {
-                Ok((profiles, status, page)) => {
+                Ok((profiles, status, page, import)) => {
+                    m.sm_import = import;
                     m.profiles = profiles;
                     m.status = Some(status);
                     m.page = page;
@@ -196,6 +211,33 @@ fn forget_remote_memory(s: &mut State, container: String, id: String) {
     );
 }
 
+/// The Settings → Keys id of the Supermemory key.
+const SUPERMEMORY_KEY_ID: &str = "supermemory_api_key";
+
+/// Store the Supermemory key Hermes holds (tested first by the gateway).
+fn import_key(s: &mut State) {
+    s.pages.memory.busy = true;
+    jobs::run(
+        s,
+        "memory",
+        |c| async move { c.service_key_import(SUPERMEMORY_KEY_ID).await },
+        |s, result, tx| {
+            tx.animated();
+            s.pages.memory.busy = false;
+            match result {
+                Ok(response) => {
+                    s.pages.memory.notice =
+                        Some(crate::pages::keys::describe_set("Supermemory", &response));
+                    s.pages.memory.error = None;
+                    load_with(s, true);
+                    crate::pages::keys::refresh(s);
+                }
+                Err(e) => fail(s, crate::pages::keys::describe_error(&e, "Supermemory")),
+            }
+        },
+    );
+}
+
 fn pick_profile(s: &mut State, id: Option<String>) {
     let m = &mut s.pages.memory;
     m.profile = id;
@@ -211,9 +253,7 @@ fn pick_container(s: &mut State, tag: String) {
 
 fn binding_line(status: &SupermemoryStatus) -> String {
     match (&status.binding, status.key_configured) {
-        (_, false) => "No Supermemory API key is stored, so local memory is used. Add the \
-                       key in Settings to turn Supermemory on."
-            .to_string(),
+        (_, false) => "No Supermemory API key is stored, so local memory is used.".to_string(),
         (None, true) => {
             "This profile has no Supermemory container; local memory is used.".to_string()
         }
@@ -249,7 +289,14 @@ pub(super) fn render(s: &State, k: &Kit) -> El {
         return empty_state(p, "Supermemory is not part of this build.");
     }
     let mut profile_picker = row().key("sm-profiles").w_full().gap(8.0).flex_wrap();
-    let choices = std::iter::once((None, "Default".to_string())).chain(
+    // A `default` profile with its own container is listed too: the
+    // no-profile choice then names itself apart.
+    let default_label = if m.profiles.iter().any(|(id, _)| id == "default") {
+        "Deployment default"
+    } else {
+        "Default"
+    };
+    let choices = std::iter::once((None, default_label.to_string())).chain(
         m.profiles
             .iter()
             .map(|(id, name)| (Some(id.clone()), name.clone())),
@@ -309,6 +356,34 @@ pub(super) fn render(s: &State, k: &Kit) -> El {
         .gap(12.0)
         .child(profile_picker)
         .child(styled(binding_line(status), sm(), p.text_muted).wrap());
+    if !status.key_configured {
+        let mut actions = row().key("sm-key-actions").gap(8.0).center_y();
+        if let Some(source) = &m.sm_import {
+            actions = actions.child(press_button(
+                k,
+                "sm-import-key",
+                &format!("Use the key from {source}"),
+                Look::Primary,
+                None,
+                m.busy,
+                import_key,
+            ));
+        }
+        actions = actions.child(press_button(
+            k,
+            "sm-open-keys",
+            "Add a key in Settings → Keys",
+            if m.sm_import.is_some() {
+                Look::Ghost
+            } else {
+                Look::Primary
+            },
+            None,
+            false,
+            |s: &mut State| crate::workspace::show(s, crate::state::Page::Keys),
+        ));
+        c = c.child(actions);
+    }
     if !status.active {
         return c;
     }

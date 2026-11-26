@@ -46,6 +46,13 @@ impl ProductSurface for Recording {
             }
             "memory.supermemory.delete_document" => json!({"id": "d1", "verified": true}),
             "memory.supermemory.forget" => json!({"id": "m1", "forgotten": true}),
+            "memory.wiki.init" => {
+                json!({"created": [], "kept": [], "status": {"available": true, "initialized": true, "pages": 3}})
+            }
+            "service_keys.set" | "service_keys.import" => {
+                json!({"id": "supermemory_api_key", "stored": true, "check": "verified"})
+            }
+            "service_keys.remove" => json!({"id": "supermemory_api_key", "stored": false}),
             _ => return Err(ProductSurfaceError::not_found()),
         };
         Ok(ProductSurfaceInvokeResponse { output })
@@ -219,5 +226,67 @@ async fn memory_write_rejects_unknown_body_fields_before_the_surface() {
     )
     .await;
     assert!(status.is_client_error());
+    assert!(surface.invokes.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn keys_and_wiki_routes_forward_their_descriptors() {
+    let surface = Arc::new(Recording::default());
+    let router = router(Arc::clone(&surface));
+    for (uri, view) in [
+        ("/api/webchat/v2/keys", "service_keys.list"),
+        ("/api/webchat/v2/memory/wiki", "memory.wiki.status"),
+    ] {
+        let (status, _) = send(&router, Method::GET, uri, None).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        let (recorded, _, user) = surface.queries.lock().unwrap().last().cloned().unwrap();
+        assert_eq!((recorded.as_str(), user.as_str()), (view, "alice"));
+    }
+    for (uri, command, body) in [
+        (
+            "/api/webchat/v2/keys",
+            "service_keys.set",
+            json!({"id": "supermemory_api_key", "value": "sm_route_test"}),
+        ),
+        (
+            "/api/webchat/v2/keys/import",
+            "service_keys.import",
+            json!({"id": "supermemory_api_key"}),
+        ),
+        (
+            "/api/webchat/v2/keys/remove",
+            "service_keys.remove",
+            json!({"id": "supermemory_api_key"}),
+        ),
+        (
+            "/api/webchat/v2/memory/wiki/init",
+            "memory.wiki.init",
+            json!({}),
+        ),
+    ] {
+        let (status, response) = send(&router, Method::POST, uri, Some(body)).await;
+        assert_eq!(status, StatusCode::OK, "{uri}: {response}");
+        assert!(!response.to_string().contains("sm_route_test"));
+        let (recorded, _, _) = surface.invokes.lock().unwrap().last().cloned().unwrap();
+        assert_eq!(recorded, command);
+    }
+}
+
+#[tokio::test]
+async fn a_malformed_key_body_is_refused_without_quoting_it() {
+    let surface = Arc::new(Recording::default());
+    let router = router(Arc::clone(&surface));
+    for body in [
+        json!({"id": "supermemory_api_key", "value": "sm_SECRET_ONE", "extra": "sm_SECRET_TWO"}),
+        json!({"id": "supermemory_api_key", "value": ["sm_SECRET_ONE"]}),
+        json!({"id": 7, "value": "sm_SECRET_ONE"}),
+    ] {
+        let (status, response) =
+            send(&router, Method::POST, "/api/webchat/v2/keys", Some(body)).await;
+        assert!(status.is_client_error(), "{response}");
+        let text = response.to_string();
+        assert!(!text.contains("SECRET"), "{text}");
+        assert_eq!(response["field"], "request", "{text}");
+    }
     assert!(surface.invokes.lock().unwrap().is_empty());
 }

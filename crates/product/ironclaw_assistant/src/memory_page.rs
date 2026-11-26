@@ -120,6 +120,13 @@ impl MemoryPageSurface {
                 Ok(params) => self.search(caller, params).await.and_then(to_value),
                 Err(error) => Err(error),
             }
+        } else if id == MEMORY_WIKI_STATUS_VIEW.id {
+            match parse::<MemoryWikiStatusRequest>(input) {
+                Ok(_) => crate::memory_wiki::status(self.documents.as_deref(), caller)
+                    .await
+                    .and_then(to_value),
+                Err(error) => Err(error),
+            }
         } else if id == SUPERMEMORY_STATUS_VIEW.id {
             match parse::<SupermemoryStatusRequest>(input) {
                 Ok(params) => self.sm_status(caller, params).await.and_then(to_value),
@@ -155,6 +162,13 @@ impl MemoryPageSurface {
         } else if id == MEMORY_ARCHIVE_COMMAND_ID {
             match parse::<MemoryArchiveRequest>(input) {
                 Ok(body) => self.archive(caller, body).await.and_then(to_value),
+                Err(error) => Err(error),
+            }
+        } else if id == MEMORY_WIKI_INIT_COMMAND_ID {
+            match parse::<MemoryWikiInitRequest>(input) {
+                Ok(_) => crate::memory_wiki::init(self.documents.as_deref(), caller)
+                    .await
+                    .and_then(to_value),
                 Err(error) => Err(error),
             }
         } else if id == SUPERMEMORY_DELETE_DOCUMENT_COMMAND_ID {
@@ -424,6 +438,28 @@ impl MemoryPageSurface {
     }
 }
 
+/// The Memory page and Settings → Keys over `inner`, and the CLI memory
+/// tools on `bridge` (answered by the same page surface).
+pub fn wrap(
+    inner: Arc<dyn ProductSurface>,
+    documents: Option<Arc<dyn MemoryDocumentsSource>>,
+    supermemory: Arc<Supermemory>,
+    profiles: Option<Arc<Engine>>,
+    secrets: Arc<dyn ironclaw_product_contracts::operator_secrets::OperatorSecretValueStore>,
+    bridge: Option<&ironclaw_cli_providers::bridge::CliBridge>,
+) -> Arc<dyn ProductSurface> {
+    let page: Arc<dyn ProductSurface> = Arc::new(MemoryPageSurface::new(
+        inner,
+        documents,
+        Some(Arc::clone(&supermemory)),
+        profiles,
+    ));
+    if let Some(bridge) = bridge {
+        crate::memory_bridge::register(bridge, Arc::clone(&page));
+    }
+    crate::service_keys::ServiceKeysSurface::for_host(page, supermemory, secrets)
+}
+
 #[async_trait]
 impl ProductSurface for MemoryPageSurface {
     async fn invoke(
@@ -572,4 +608,4 @@ fn map_supermemory_error(error: SupermemoryError) -> ProductSurfaceError {
 
 #[cfg(test)]
 #[path = "memory_page_tests.rs"]
-mod tests;
+pub(crate) mod tests;

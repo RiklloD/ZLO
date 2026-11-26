@@ -98,9 +98,11 @@ use crate::webui_v2::descriptors::{
 use crate::webui_v2::descriptors::{
     WEBUI_V2_PATTERN_HOOKS, WEBUI_V2_PATTERN_MEMORY_ARCHIVE, WEBUI_V2_PATTERN_MEMORY_DOCUMENT,
     WEBUI_V2_PATTERN_MEMORY_DOCUMENTS, WEBUI_V2_PATTERN_MEMORY_SEARCH,
-    WEBUI_V2_PATTERN_SUPERMEMORY, WEBUI_V2_PATTERN_SUPERMEMORY_DELETE_DOCUMENT,
-    WEBUI_V2_PATTERN_SUPERMEMORY_DOCUMENTS, WEBUI_V2_PATTERN_SUPERMEMORY_FORGET,
-    WEBUI_V2_PATTERN_SUPERMEMORY_SEARCH,
+    WEBUI_V2_PATTERN_MEMORY_WIKI, WEBUI_V2_PATTERN_MEMORY_WIKI_INIT,
+    WEBUI_V2_PATTERN_SERVICE_KEY_IMPORT, WEBUI_V2_PATTERN_SERVICE_KEY_REMOVE,
+    WEBUI_V2_PATTERN_SERVICE_KEYS, WEBUI_V2_PATTERN_SUPERMEMORY,
+    WEBUI_V2_PATTERN_SUPERMEMORY_DELETE_DOCUMENT, WEBUI_V2_PATTERN_SUPERMEMORY_DOCUMENTS,
+    WEBUI_V2_PATTERN_SUPERMEMORY_FORGET, WEBUI_V2_PATTERN_SUPERMEMORY_SEARCH,
 };
 use crate::webui_v2::descriptors::{
     WEBUI_V2_PATTERN_PLUGIN_UI_EVENT, WEBUI_V2_PATTERN_PLUGIN_UI_RENDER,
@@ -495,6 +497,14 @@ pub fn webui_v2_router_with_options(state: WebUiV2State, options: WebUiV2RouteOp
             WEBUI_V2_PATTERN_SUPERMEMORY_FORGET,
             post(handlers::supermemory_forget),
         )
+        .route(
+            WEBUI_V2_PATTERN_MEMORY_WIKI,
+            get(handlers::memory_wiki_status),
+        )
+        .route(
+            WEBUI_V2_PATTERN_MEMORY_WIKI_INIT,
+            post(handlers::memory_wiki_init),
+        )
         .route(WEBUI_V2_PATTERN_HOOKS, get(handlers::hooks_catalog))
         .route(
             WEBUI_V2_PATTERN_PLUGIN_UI_SLOTS,
@@ -830,6 +840,19 @@ pub fn webui_v2_router_with_options(state: WebUiV2State, options: WebUiV2RouteOp
             .route(
                 WEBUI_V2_PATTERN_OPERATOR_CONFIG,
                 get(handlers::list_operator_config),
+            )
+            // Settings → Keys: deployment-wide service API keys.
+            .route(
+                WEBUI_V2_PATTERN_SERVICE_KEYS,
+                get(handlers::service_keys_list).post(handlers::service_key_set),
+            )
+            .route(
+                WEBUI_V2_PATTERN_SERVICE_KEY_IMPORT,
+                post(handlers::service_key_import),
+            )
+            .route(
+                WEBUI_V2_PATTERN_SERVICE_KEY_REMOVE,
+                post(handlers::service_key_remove),
             )
             .route(
                 WEBUI_V2_PATTERN_OPERATOR_CONFIG_VALIDATE,
