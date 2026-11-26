@@ -16,6 +16,7 @@ use crate::state::{Conn, State};
 /// When leaving a Failed/Connecting screen, the handover is deferred through
 /// `Rt::deliver` so `workspace::connected`'s crossfade runs on a live `Tx`.
 pub fn focus(s: &mut State, key: &str) {
+    s.remote.navigation.bump();
     s.remote.pending_thread = None;
     if is_ready_focused(s, key) {
         return;
@@ -28,10 +29,11 @@ pub fn focus(s: &mut State, key: &str) {
         warm(s, key, None);
         return;
     }
-    // Deferred: a navigation or connect attempt started meanwhile wins.
-    let (key, asked) = (key.to_string(), s.workspace.connect_gen);
+    // Deferred: a newer move of the focus wins; a connect retry does not
+    // cancel it.
+    let (key, asked) = (key.to_string(), s.remote.navigation.bump());
     s.rt.deliver(move |s, tx| {
-        if s.workspace.connect_gen != asked {
+        if s.remote.navigation != asked {
             return false;
         }
         if can_handover(s, &key) {
@@ -48,6 +50,7 @@ pub fn focus(s: &mut State, key: &str) {
 /// bound to the connect attempt it starts: a failure or a newer attempt
 /// drops it (`PendingThread::live`).
 pub fn focus_thread(s: &mut State, key: &str, thread_id: String) {
+    s.remote.navigation.bump();
     s.remote.pending_thread = None;
     if is_ready_focused(s, key) {
         crate::workspace::open_thread(s, thread_id);
@@ -61,9 +64,9 @@ pub fn focus_thread(s: &mut State, key: &str, thread_id: String) {
         warm(s, key, Some(thread_id));
         return;
     }
-    let (key, asked) = (key.to_string(), s.workspace.connect_gen);
+    let (key, asked) = (key.to_string(), s.remote.navigation.bump());
     s.rt.deliver(move |s, tx| {
-        if s.workspace.connect_gen != asked {
+        if s.remote.navigation != asked {
             return false;
         }
         if can_handover(s, &key) {
@@ -86,13 +89,20 @@ pub fn focus_thread(s: &mut State, key: &str, thread_id: String) {
 /// A cold switch carrying a thread to open: the intent rides on the attempt
 /// the switch starts, and is not set when the switch ended at once.
 fn cold_thread(s: &mut State, key: &str, thread_id: String) {
+    // Set before the switch starts, so an attempt that fails in this very
+    // step clears it (`connect::failed`); bound to the attempt after.
+    s.remote.pending_thread = Some(PendingThread {
+        computer: key.to_string(),
+        thread_id,
+        attempt: None,
+    });
     connect::switch_to(s, active_of_key(key));
-    if s.remote.switching.is_some() || !matches!(s.conn, Conn::Ready) {
-        s.remote.pending_thread = Some(PendingThread {
-            computer: key.to_string(),
-            thread_id,
-            attempt: Some(s.workspace.connect_gen),
-        });
+    let attempt = s.workspace.connect_gen;
+    let in_flight = s.remote.switching.is_some() || matches!(s.conn, Conn::Connecting);
+    match s.remote.pending_thread.as_mut() {
+        Some(pending) if in_flight => pending.attempt = Some(attempt),
+        // Nothing is in flight (it failed at once, or needed no switch).
+        _ => s.remote.pending_thread = None,
     }
 }
 
@@ -132,6 +142,8 @@ fn handover(s: &mut State, key: &str, tx: &mut Tx) {
     let Some(mut peer) = s.remote.peers.take(key) else {
         return;
     };
+    // It is the focused computer from here: its marks as a peer are over.
+    crate::pages::notifications::peer_connection_ended(s, key);
     let (Some(peer_backend), Some(peer_session), Some(peer_inbox)) =
         (peer.backend.take(), peer.session.take(), peer.inbox.take())
     else {

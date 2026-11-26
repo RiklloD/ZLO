@@ -128,9 +128,100 @@ fn removing_the_focused_computer_saves_a_valid_pick() {
 
     crate::remote::pairing::remove(&mut s, "env-a".into());
 
-    assert_eq!(s.remote.registry.active, Active::ThisMac);
+    // This Mac runs no backend here: the first computer still saved.
+    assert_eq!(
+        s.remote.registry.active,
+        Active::Environment("env-c".into())
+    );
     assert!(s.remote.switching.is_none());
     assert!(s.remote.registry.get("env-a").is_none());
+}
+
+/// Removing the focused computer while another is connected moves there on
+/// its warm connection, not to a connecting screen.
+#[test]
+fn removing_the_focused_computer_moves_to_a_connected_one() {
+    let _guard = crate::service::TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let gw_a = Gateway::start(vec![Answer::ok("{}")]);
+    let gw_b = Gateway::start(vec![
+        Answer::ok(descriptor_json("env-b", "Box B")),
+        Answer::ok(session_json()),
+        Answer::ok(inbox_json("t-b", "On B", None)),
+        Answer::ok(notifications_json("n-b", "t-b")),
+        Answer::ok("{}"),
+    ]);
+    let mut s = state();
+    let mut pump = Pump::install(&mut s);
+    two_computers(&mut s, &gw_a, saved_env("env-b", "Box B", &gw_b.base_url));
+    sync(&mut s);
+    assert!(pump.until(&mut s, Duration::from_secs(5), |s| {
+        get(s, "env-b").is_some_and(|p| p.conn == PeerConn::Ready)
+    }));
+
+    crate::remote::pairing::remove(&mut s, "env-a".into());
+
+    assert_eq!(s.onboarding.computer.key(), "env-b");
+    assert!(matches!(s.conn, Conn::Ready));
+    assert_eq!(
+        s.remote.registry.active,
+        Active::Environment("env-b".into())
+    );
+    assert!(
+        get(&s, "env-a").is_none(),
+        "the removed computer is no peer"
+    );
+}
+
+/// Two deferred moves asked from a failed screen: the later one wins, and a
+/// connect retry in between cancels neither.
+#[test]
+fn the_latest_deferred_move_wins() {
+    let _guard = crate::service::TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let gw_a = Gateway::start(vec![Answer::ok("{}")]);
+    let gw_b = Gateway::start(vec![
+        Answer::ok(descriptor_json("env-b", "Box B")),
+        Answer::ok(session_json()),
+        Answer::ok(inbox_json("t-b", "On B", None)),
+        Answer::ok(notifications_json("n-b", "t-b")),
+        Answer::ok("{}"),
+    ]);
+    let gw_c = Gateway::start(vec![
+        Answer::ok(descriptor_json("env-c", "Box C")),
+        Answer::ok(session_json()),
+        Answer::ok(inbox_json("t-c", "On C", None)),
+        Answer::ok(notifications_json("n-c", "t-c")),
+        Answer::ok("{}"),
+    ]);
+    let mut s = state();
+    let mut pump = Pump::install(&mut s);
+    two_computers(&mut s, &gw_a, saved_env("env-b", "Box B", &gw_b.base_url));
+    s.remote
+        .registry
+        .upsert(saved_env("env-c", "Box C", &gw_c.base_url));
+    s.remote.tokens.set("env-c", "tok-c").expect("token c");
+    sync(&mut s);
+    assert!(pump.until(&mut s, Duration::from_secs(5), |s| {
+        ["env-b", "env-c"]
+            .iter()
+            .all(|k| get(s, k).is_some_and(|p| p.conn == PeerConn::Ready))
+    }));
+    // The focused connection failed: moves are deferred to a live `Tx`.
+    s.conn = Conn::Failed {
+        message: "down".into(),
+        retry_in: None,
+    };
+
+    focus(&mut s, "env-b");
+    s.workspace.connect_gen.bump(); // a connect retry in between
+    focus(&mut s, "env-c");
+    pump.run_for(&mut s, Duration::from_millis(200));
+
+    assert_eq!(s.onboarding.computer.key(), "env-c");
+    assert!(matches!(s.conn, Conn::Ready));
 }
 
 /// This Mac's managed backend is switched off while it has the focus and

@@ -61,7 +61,9 @@ pub(super) enum DefaultOutcome {
 /// usable (single-computer view stays pixel-identical).
 pub(super) fn control(s: &State, k: &Kit, layer: &mut Vec<El>) -> Option<El> {
     let choices = peers::usable(s);
-    if choices.len() <= 1 {
+    // A triage draft is about the computer it was started on (its session
+    // is being prepared there): it does not move.
+    if choices.len() <= 1 || crate::workspace::triage::is_triage_draft(s) {
         return None;
     }
     let draft = s.workspace.draft.as_ref()?;
@@ -140,12 +142,10 @@ pub(crate) fn pick(s: &mut State, key: String) {
     let source = s.onboarding.computer.key();
     let ready = matches!(s.conn, crate::state::Conn::Ready)
         && peers::get(s, &key).is_some_and(|p| p.conn == PeerConn::Ready);
-    if source == key || !ready {
+    if source == key || !ready || crate::workspace::triage::is_triage_draft(s) {
         return;
     }
-    if !crate::workspace::triage::is_triage_draft(s)
-        && let Some(d) = s.workspace.draft.as_ref()
-    {
+    if let Some(d) = s.workspace.draft.as_ref() {
         s.workspace.carried_draft = Some(CarriedDraft {
             source,
             target: key.clone(),
@@ -317,7 +317,7 @@ pub(crate) fn connected(s: &mut State) -> bool {
 /// computer's limits), as attaching them there would have; each keeps its
 /// key, so its card in the text still points at it. One that cannot be read
 /// stays as it was, and the draft says why (a send refuses it by name).
-fn restage_for_remote(s: &mut State) {
+pub(super) fn restage_for_remote(s: &mut State) {
     use zlo_client::attachments::{self, Backend, Body};
     if !crate::remote::backend_is_remote(s) {
         return;
@@ -337,6 +337,7 @@ fn restage_for_remote(s: &mut State) {
         return;
     }
     let limits = session.attachments.clone();
+    let check = limits.clone();
     let generation = draft.generation;
     crate::jobs::run(
         s,
@@ -363,7 +364,18 @@ fn restage_for_remote(s: &mut State) {
             };
             let mut problems = Vec::new();
             for (key, staged) in results {
-                match staged {
+                // Within the message's count and total limits too, counting
+                // what already uploads; one that does not fit stays a path,
+                // which a send refuses by name.
+                let others: Vec<_> = draft
+                    .staged
+                    .iter()
+                    .filter(|f| f.key != key)
+                    .cloned()
+                    .collect();
+                match staged
+                    .and_then(|read| attachments::check(&read, &others, &check).map(|()| read))
+                {
                     Ok(read) => {
                         if let Some(file) = draft.staged.iter_mut().find(|f| f.key == key) {
                             file.body = read.body;

@@ -934,4 +934,8 @@ fn a_moved_drafts_local_file_is_read_for_the_other_computer() {
     let d = s.workspace.draft.as_ref().expect("draft");
     assert!(crate::remote::check_outgoing(&s, &d.staged).is_ok());
     assert_eq!(d.input.text, "Read this");
+    // The saved copy holds the bytes too: leaving and reopening the draft
+    // does not bring the path back.
+    let saved = crate::drafts::restore(&s, crate::drafts::NEW_THREAD).expect("saved");
+    assert!(saved.files.iter().all(|f| f.bytes().is_some()));
 }

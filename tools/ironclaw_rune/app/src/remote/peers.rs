@@ -250,6 +250,10 @@ pub fn sync(s: &mut State) {
     }
 
     let dropped_any = !existing.is_empty();
+    // Replies to changes asked on a dropped peer may never land.
+    for gone in &existing {
+        crate::pages::notifications::peer_connection_ended(s, &gone.key());
+    }
     // Removed peers (and their `Backend` handles) drop here on the UI thread.
     drop(existing);
     s.remote.peers.entries = next;

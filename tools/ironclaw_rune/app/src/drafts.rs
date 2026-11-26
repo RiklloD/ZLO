@@ -341,8 +341,19 @@ pub fn record(s: &mut State, key: &str, draft: Draft) {
         }
         store.drafts.remove(key);
     } else {
+        // Files count too: one read for another computer keeps its key
+        // and name but is bytes now, not a path.
+        let files = |d: &Draft| -> Vec<(u64, u64, bool)> {
+            d.files
+                .iter()
+                .map(|f| (f.key, f.size, f.bytes().is_some()))
+                .collect()
+        };
         let same = store.drafts.get(key).is_some_and(|d| {
-            d.text == draft.text && d.tokens == draft.tokens && d.profile == draft.profile
+            d.text == draft.text
+                && d.tokens == draft.tokens
+                && d.profile == draft.profile
+                && files(d) == files(&draft)
         });
         if same {
             return;

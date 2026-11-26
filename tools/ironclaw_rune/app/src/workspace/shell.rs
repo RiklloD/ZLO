@@ -244,9 +244,12 @@ fn failed(s: &State, p: &Palette, k: &Kit, message: &str, retry_in: Option<u64>)
                 rune_kit::Button::new(format!("Use {label}"))
                     .icon(&icons::MONITOR)
                     .help(format!("Work on {label}, which is connected"))
-                    .on_press(move |s: &mut State| crate::remote::peers::focus(s, &key))
+                    .on_press({
+                        let key = key.clone();
+                        move |s: &mut State| crate::remote::peers::focus(s, &key)
+                    })
                     .build(k)
-                    .key(format!("failed-use-{label}"))
+                    .key(format!("failed-use-{key}"))
             }))
             .children(remote.then(|| {
                 // A paired computer that does not answer must not strand

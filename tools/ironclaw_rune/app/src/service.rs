@@ -192,7 +192,15 @@ pub fn start() {
         // the old one has exited, and never overlaps a second supervisor.
         if sup.stopping.swap(false, Ordering::SeqCst) {
             sup.restarting.store(true, Ordering::SeqCst);
-            sup.again.store(true, Ordering::SeqCst);
+            // It resumes as a new lifecycle: its errors show again.
+            new_lifecycle();
+            clear_startup_failure();
+        }
+        sup.again.store(true, Ordering::SeqCst);
+        // It may have ended between those lines, past its own last look at
+        // `again`: then this start is the owner after all.
+        if !sup.running.load(Ordering::SeqCst) && sup.again.swap(false, Ordering::SeqCst) {
+            start();
         }
         return;
     }
@@ -201,7 +209,8 @@ pub fn start() {
     // A new supervising lifecycle: an earlier one's error is history.
     let lifecycle = new_lifecycle();
     clear_startup_failure();
-    std::thread::Builder::new()
+    let owner = sup.clone();
+    let spawned = std::thread::Builder::new()
         .name("zlo-backend".into())
         .spawn(move || {
             retire_launchd_jobs(&paths.home);
@@ -216,11 +225,15 @@ pub fn start() {
             }
             sup.running.store(false, Ordering::SeqCst);
             // A start that arrived between that check and this line.
-            if sup.again.swap(false, Ordering::SeqCst) {
+            if sup.again.swap(false, Ordering::SeqCst) && !sup.stopping.load(Ordering::SeqCst) {
                 start();
             }
-        })
-        .ok();
+        });
+    if let Err(e) = spawned {
+        // No supervisor runs: the next start may try again.
+        owner.running.store(false, Ordering::SeqCst);
+        tracing::warn!(error = %e, "backend supervisor did not start");
+    }
 }
 
 /// Restart the backend this app runs (a CLI installed since it started is
@@ -302,9 +315,11 @@ pub fn stop() -> bool {
     // `running` is the supervisor thread's to clear, when it has ended: a
     // start that comes first is handed to it (`start`), never a second one.
     let was_running = sup.running.load(Ordering::SeqCst);
-    let pid = backend_pid();
     sup.again.store(false, Ordering::SeqCst);
+    // Before the pid is read: a backend being spawned right now is not in
+    // `pid` yet, and its supervisor stops it itself when it sees this.
     sup.stopping.store(true, Ordering::SeqCst);
+    let pid = backend_pid();
     sup.restarting.store(false, Ordering::SeqCst);
     new_lifecycle();
     clear_startup_failure();
@@ -466,6 +481,9 @@ fn classify_exit(sup: &Supervisor) -> ExitAction {
 fn supervise(sup: &Supervisor, paths: &Paths, lifecycle: u64) {
     let mut backoff = Duration::from_secs(1);
     while !sup.stopping.load(Ordering::SeqCst) {
+        // The lifecycle in force now: a supervisor that was stopped and
+        // told to run on reports under the new one.
+        let lifecycle = lifecycle.max(LIFECYCLE.load(Ordering::SeqCst));
         let started = Instant::now();
         let (mut child, log, log_from) = match spawn(paths) {
             Ok(spawned) => spawned,
@@ -485,6 +503,10 @@ fn supervise(sup: &Supervisor, paths: &Paths, lifecycle: u64) {
         tracing::debug!(pid, backend = %paths.backend.display(), "backend started");
         let _ = fs::write(paths.home.join(PID_FILE), pid.to_string());
         sup.pid.store(pid, Ordering::SeqCst);
+        // A stop that came while it was being spawned could not see its pid.
+        if sup.stopping.load(Ordering::SeqCst) {
+            terminate(pid);
+        }
         // Block until it exits: no wakeups while it runs.
         let status = child.wait().ok();
         sup.pid.store(0, Ordering::SeqCst);

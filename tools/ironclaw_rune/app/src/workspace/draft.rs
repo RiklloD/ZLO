@@ -140,6 +140,8 @@ pub fn composer_edit<'a>(s: &'a mut State, target: &ComposerTarget) -> Option<&'
 
 /// Show the new-thread screen; an unsent draft keeps its text.
 pub(super) fn open(s: &mut State) {
+    // A newer navigation than a thread click still waiting on a switch.
+    s.remote.pending_thread = None;
     s.page = Page::Draft;
     if s.workspace.draft.is_none() {
         let computer_note = match runs_on::apply_default_on_open(s) {
@@ -168,6 +170,9 @@ pub(super) fn open(s: &mut State) {
         s.workspace.draft = Some(draft);
         load_menu(s, generation);
         crate::design::look::reshuffle(s);
+        // A saved draft whose files were staged by this Mac's path (it was
+        // written on This Mac, or swapped here) is read for this computer.
+        runs_on::restage_for_remote(s);
     }
     // A kept draft re-reads its profile: its default may have changed.
     let catalog = catalog_thread(s);

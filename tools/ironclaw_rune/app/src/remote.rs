@@ -88,6 +88,10 @@ pub struct RemoteState {
     /// focus lands there (`peers::focus_thread`). Takes precedence over the
     /// draft default computer and `last_thread`, even when absent from inbox.
     pub pending_thread: Option<PendingThread>,
+    /// Bumped by every explicit move of the focus (`peers::focus`,
+    /// `peers::focus_thread`): a deferred handover runs only while it is
+    /// still the latest one asked. Connect retries do not touch it.
+    pub navigation: crate::jobs::Generation,
     /// A switch in flight: the old screen stays until the new one answers.
     pub switching: Option<Switching>,
     pub page: pairing::PageState,
@@ -149,6 +153,7 @@ impl Default for RemoteState {
             problems: HashMap::new(),
             last_thread: HashMap::new(),
             pending_thread: None,
+            navigation: Default::default(),
             switching: None,
             page: Default::default(),
             tunnel: None,

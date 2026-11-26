@@ -765,6 +765,8 @@ fn failed(s: &mut State, mode: Mode, problem: Problem) {
             ?problem,
             "route refresh failed; keeping the connection in use"
         );
+        // A tunnel the failed candidate opened has no adopter.
+        super::retain_tunnels(s);
         super::failback::schedule(s);
         return;
     }

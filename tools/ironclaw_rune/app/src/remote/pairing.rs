@@ -461,22 +461,52 @@ pub fn remove(s: &mut State, environment_id: String) {
         );
     }
     if was_active {
-        // The saved pick never names the removed entry, whatever happens
-        // next: This Mac, by its warm connection when it has one.
-        s.remote.registry.active = Active::ThisMac;
+        // Its tunnel (an SSH route) has no owner any more.
+        s.remote.tunnel = None;
+        super::retain_tunnels(s);
+        use super::peers::{self, PeerConn};
+        // Where the focus goes: a computer that is already connected (This
+        // Mac first), else This Mac when it may run a backend, else the
+        // first computer still saved; a Light install with none left shows
+        // "Add a computer".
+        let this_mac = zlo_client::environments::THIS_MAC;
+        let ready: Vec<String> = peers::list(s)
+            .into_iter()
+            .filter(|p| p.conn == PeerConn::Ready)
+            .map(|p| p.computer.key())
+            .collect();
+        let warm = ready
+            .iter()
+            .find(|k| k.as_str() == this_mac)
+            .or(ready.first())
+            .cloned()
+            .filter(|_| matches!(s.conn, crate::state::Conn::Ready));
+        let next = match &warm {
+            Some(key) if key != this_mac => Active::Environment(key.clone()),
+            Some(_) => Active::ThisMac,
+            None if !s.remote.app_only && s.remote.registry.run_local_backend => Active::ThisMac,
+            None => s
+                .remote
+                .registry
+                .environments
+                .first()
+                .map_or(Active::ThisMac, |e| {
+                    Active::Environment(e.environment_id.clone())
+                }),
+        };
+        // The saved pick never names the removed entry, whatever happens next.
+        s.remote.registry.active = next;
         s.remote.legacy_active = false;
         if let Err(e) = super::save_registry(s) {
             s.remote.page.error = Some(e);
         }
-        let this_mac = zlo_client::environments::THIS_MAC;
-        let warm =
-            super::peers::get(s, this_mac).is_some_and(|p| p.conn == super::peers::PeerConn::Ready);
-        if warm && matches!(s.conn, crate::state::Conn::Ready) {
-            super::peers::focus(s, this_mac);
-        } else {
-            s.workspace.connect_attempt = 0;
-            s.launched = std::time::Instant::now();
-            super::connect(s);
+        match warm {
+            Some(key) => peers::focus(s, &key),
+            None => {
+                s.workspace.connect_attempt = 0;
+                s.launched = std::time::Instant::now();
+                super::connect(s);
+            }
         }
     } else {
         if let Err(e) = super::save_registry(s) {
