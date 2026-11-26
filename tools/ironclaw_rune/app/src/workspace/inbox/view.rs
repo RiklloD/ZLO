@@ -20,7 +20,7 @@ pub(in crate::workspace) mod list;
 mod rows;
 
 pub(in crate::workspace) use rows::{
-    branch_label, draft_mark, profile_color, profile_mark, status_label,
+    MARK_SIZE, branch_label, draft_mark, profile_color, profile_mark, status_label,
 };
 
 /// The sidebar's thread list with its header. `layer` takes the profile

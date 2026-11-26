@@ -13,7 +13,7 @@ use zlo_client::history::HistoryHit;
 use zlo_client::profiles::DEFAULT_PROFILE_ID;
 
 use super::inbox::picker;
-use super::inbox::view::profile_mark;
+use super::inbox::view::{MARK_SIZE, profile_mark};
 use super::ui::{self, XS, t};
 use super::{message_search, row_title};
 use crate::icons;
@@ -637,7 +637,7 @@ pub(super) fn view(s: &State, k: &Kit, layer: &mut Vec<El>) {
     }
     let mut card = col()
         .w(600.)
-        .clip_rounded(12.)
+        .clip_rounded(crate::design::PANEL_RADIUS)
         // A press on a row (or a profile's pin) leaves the keys with the
         // search field: typing, arrows and Enter go on working.
         .preserve_focus_on_press(true)
@@ -700,7 +700,7 @@ pub(super) fn view(s: &State, k: &Kit, layer: &mut Vec<El>) {
             .transition(crate::design::motion::pop(CARD_RISE))
             .child(
                 // A press outside the card (on the scrim) closes it, as Esc.
-                ui::floating(p, card, 12.)
+                crate::design::kit::compact::panel_surface(p, card)
                     .key("cmdk-card")
                     .modal(true, |s: &mut State| s.workspace.command = None),
             ),
@@ -781,7 +781,7 @@ fn entry_row(s: &State, ix: usize, e: &Entry, on: bool) -> El {
         })
         .on_press_tx(move |s: &mut State, tx: &mut Tx| run(s, cmd.clone(), tx))
         .child(match &e.profile {
-            Some((id, name)) => el().size(16., 16.).center().child(profile_mark(
+            Some((id, name)) => el().size(MARK_SIZE, MARK_SIZE).center().child(profile_mark(
                 p,
                 id,
                 name,

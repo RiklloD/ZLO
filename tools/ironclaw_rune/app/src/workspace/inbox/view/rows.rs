@@ -476,47 +476,54 @@ pub(in crate::workspace) fn draft_mark(p: &Palette) -> El {
     ui::glyph(&icons::SQUARE_PEN, 14., p.accent)
 }
 
-/// The profile badge: a tile in the profile's colour with the first letter. `lit` 0 draws
-/// the mark at rest, 1 at full strength on hover or open.
+/// The profile badge: a solid tile in the profile's colour with its two
+/// letters ([`profile_initials`]). `lit` 0 draws the mark at rest, 1 a
+/// touch brighter on hover or open.
 pub(in crate::workspace) fn profile_mark(
     p: &Palette,
     profile_id: &str,
     name: &str,
     lit: f32,
 ) -> El {
-    let color = profile_color(p, profile_id, lit);
-    let letter = name
-        .chars()
-        .find(|c| c.is_alphanumeric())
-        .map_or('·', |c| c.to_ascii_uppercase());
     row()
-        .size(16., 16.)
-        .radius(4.)
-        .fill(color.alpha(0.22))
+        .size(MARK_SIZE, MARK_SIZE)
+        .radius(5.)
+        .fill(profile_color(p, profile_id, lit))
         .center()
-        .child(tw(letter.to_string(), 10., SEMIBOLD, color))
+        .child(tw(profile_initials(name), 8.5, SEMIBOLD, Color::WHITE))
 }
 
-/// A profile's own color, from its id. Identity keeps its color at rest
-/// (the user wants profiles told apart at a glance); `lit` 1 (hover,
-/// selection) only brings it to full strength.
-pub(in crate::workspace) fn profile_color(p: &Palette, profile_id: &str, lit: f32) -> Color {
-    let colors = [p.accent, p.success, p.warning, p.danger, p.text_muted];
-    let hash = profile_id
-        .bytes()
-        .fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32));
-    mix(
-        p.text_muted,
-        colors[hash as usize % colors.len()],
-        0.7 + 0.3 * lit,
-    )
+/// The badge's side, also the slot other rows reserve for it.
+pub(in crate::workspace) const MARK_SIZE: f32 = 18.;
+
+/// Two letters for a profile: the first two words' initials ("Business
+/// analytics" → "BA"), else a single word's first two ("Luft" → "LU").
+pub(in crate::workspace) fn profile_initials(name: &str) -> String {
+    let words: Vec<&str> = name
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let letters: String = match words.as_slice() {
+        [] => return "·".into(),
+        [one] => one.chars().take(2).collect(),
+        [a, b, ..] => a.chars().take(1).chain(b.chars().take(1)).collect(),
+    };
+    letters.to_uppercase()
 }
 
-/// Linear mix in OKLab, `t` 0 → `a`, 1 → `b`.
-pub(in crate::workspace) fn mix(a: Color, b: Color, t: f32) -> Color {
-    let (x, y) = (a.to_oklab(), b.to_oklab());
-    let l = |i: usize| x[i] + (y[i] - x[i]) * t;
-    Color::from_oklab([l(0), l(1), l(2), l(3)])
+/// A profile's own color, from its id: one of eight saturated hues, the
+/// same in both themes, so profiles are told apart at a glance. `lit` 1
+/// (hover, selection) lifts it slightly.
+pub(in crate::workspace) fn profile_color(_p: &Palette, profile_id: &str, lit: f32) -> Color {
+    // OKLCH hues: red, orange, green, teal, sky, blue, violet, pink.
+    const HUES: [f32; 8] = [25., 60., 140., 185., 230., 265., 305., 350.];
+    // FNV-1a: its low bits spread well, so neighbours rarely share a hue.
+    let hash = profile_id.bytes().fold(0x811c_9dc5u32, |h, b| {
+        (h ^ b as u32).wrapping_mul(0x0100_0193)
+    });
+    let hue = HUES[hash as usize % HUES.len()].to_radians();
+    let (l, c) = (0.58 + 0.04 * lit, 0.17);
+    Color::from_oklab([l, c * hue.cos(), c * hue.sin(), 1.])
 }
 
 pub(in crate::workspace) fn branch_label(p: &Palette, branch: &str) -> El {
@@ -644,5 +651,19 @@ mod tests {
         assert_eq!(format_elapsed(5), "5s");
         assert_eq!(format_elapsed(153), "2m 33s");
         assert_eq!(format_elapsed(3840), "1h 4m");
+    }
+}
+
+#[cfg(test)]
+mod mark_tests {
+    use super::profile_initials;
+
+    #[test]
+    fn initials_take_two_words_or_two_letters() {
+        assert_eq!(profile_initials("Business analytics"), "BA");
+        assert_eq!(profile_initials("IronClaw Builder"), "IB");
+        assert_eq!(profile_initials("Luft"), "LU");
+        assert_eq!(profile_initials("  x "), "X");
+        assert_eq!(profile_initials("—"), "·");
     }
 }

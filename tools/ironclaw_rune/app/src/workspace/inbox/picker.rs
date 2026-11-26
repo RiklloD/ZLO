@@ -716,7 +716,7 @@ pub fn profile_picker(s: &State, k: &Kit) -> El {
         .child(search_field(s, k))
         .child(ui::rule(p))
         .child(popover::fit_scroll(rows).max_h(LIST_MAX_H));
-    ui::floating(p, card, design::PANEL_RADIUS)
+    design::kit::compact::panel_surface(p, card)
 }
 
 /// The highlight's wash: the profile's own colour, lightly.
