@@ -214,7 +214,7 @@ async fn tighten(path: &Path) -> std::io::Result<()> {
 /// directory: the skill folders, the skill manifest (`config/skills.json`,
 /// t3code #39765) and the global rules (`AGENTS.md`, `GEMINI.md`, t3code
 /// #39531).
-const USER_CONFIG_ENTRIES: [&str; 5] = [
+pub(crate) const USER_CONFIG_ENTRIES: [&str; 5] = [
     "config/skills",
     "antigravity-cli/skills",
     "config/skills.json",

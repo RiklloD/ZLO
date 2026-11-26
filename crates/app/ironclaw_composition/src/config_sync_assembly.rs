@@ -5,10 +5,17 @@
 use std::sync::Arc;
 
 use ironclaw_assistant::config_sync::approvals::ApprovalsDomainHandler;
+#[cfg(unix)]
+use ironclaw_assistant::config_sync::cli_home::CliHomeDomainHandler;
 use ironclaw_assistant::config_sync::config::ConfigDomainHandler;
+use ironclaw_assistant::config_sync::memory::MemoryDomainHandler;
+use ironclaw_assistant::config_sync::memory_base::SettingsMemorySyncBase;
+use ironclaw_assistant::config_sync::notes::SettingsNotes;
 use ironclaw_assistant::config_sync::orchestrator_settings::OrchestratorSettingsDomainHandler;
 use ironclaw_assistant::config_sync::profiles::ProfilesDomainHandler;
 use ironclaw_assistant::config_sync::prompts::PromptsDomainHandler;
+use ironclaw_assistant::config_sync::skill_usage::SkillUsageDomainHandler;
+use ironclaw_assistant::config_sync::skills::SkillsDomainHandler;
 use ironclaw_assistant::config_sync::{ConfigSyncService, ConfigSyncSurface};
 use ironclaw_product_contracts::surface::ProductSurface;
 
@@ -26,10 +33,14 @@ pub(crate) fn wrap(
     };
     let home = boot.home();
     let user_home = std::env::var("HOME").unwrap_or_default(); // silent-ok: no HOME rewrites no home paths
+    // Where sync keeps what it made and what it replaced on this host.
+    let notes = Arc::new(SettingsNotes::new(Arc::clone(
+        &runtime.extension_filesystem,
+    )));
     let mut service = ConfigSyncService::new(
         Arc::new(runtime.environment_access_store()),
         home.path().display().to_string(),
-        user_home,
+        user_home.clone(),
     )
     .with_handler(Arc::new(ConfigDomainHandler::new(home.config_file_path())))
     .with_handler(Arc::new(ApprovalsDomainHandler::new(
@@ -41,7 +52,29 @@ pub(crate) fn wrap(
             Vec::new(),
             Some(runtime.extension_management.clone()),
         )),
+        notes.clone(),
+    )))
+    .with_handler(Arc::new(SkillsDomainHandler::new(
+        Arc::clone(&runtime.skill_management),
+        notes,
+    )))
+    .with_handler(Arc::new(SkillUsageDomainHandler::new(
+        runtime.skill_usage.clone(),
     )));
+    // The coding-agent CLIs' own rules and skills files.
+    #[cfg(unix)]
+    if !user_home.is_empty() {
+        service = service.with_handler(Arc::new(CliHomeDomainHandler::for_home(user_home.into())));
+    }
+    // Only the native provider's memory is documents this host can carry.
+    if let Some(documents) = runtime.memory_page.documents.clone() {
+        service = service.with_handler(Arc::new(MemoryDomainHandler::new(
+            documents,
+            Arc::new(SettingsMemorySyncBase::new(Arc::clone(
+                &runtime.extension_filesystem,
+            ))),
+        )));
+    }
     if let Some(engine) = runtime.orchestrator.as_ref() {
         service = service
             .with_handler(Arc::new(OrchestratorSettingsDomainHandler::new(

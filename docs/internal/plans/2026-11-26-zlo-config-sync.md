@@ -503,3 +503,190 @@ The open questions above, settled:
    off (Settings → Computers), because the box is meant to mirror the Mac.
 8. **Never synced**, as listed in 3.4: identity, devices, peer links, CLI
    logins, macOS-only state, threads, runs, events and history.
+
+## 7. As built (2026-11-26)
+
+Phases 1, 2 and 5 are in. What differs from the sketch above:
+
+- **Carrier.** The app compares the two manifests and moves only domains
+  whose hashes differ (`zlo_client::config_sync::sync_once`). It checks when
+  a computer connects, when the window comes back, when a page is left and
+  on "Sync now"; there is no timer. Snapshots pass through the app as JSON
+  it does not interpret.
+- **Pages.** `skills` and `memory` are *itemized*: exported alone, one page
+  at a time (about 2 MiB of content), after the receiver's index
+  (`index_only`), with content only for items the receiver lacks (`have`,
+  `after`). No request exceeds the 4 MiB snapshot limit. An item larger
+  than a page is not carried and is reported.
+- **Two-way.** `memory` and `skill_usage` get a return leg (target to
+  source) with `merge_back`, which only merges.
+  - Skill usage: uses merge (larger count, later use); pins mirror the Mac.
+  - Memory: three-way against a per-peer base kept under
+    `/system/settings/config-sync/memory-base/`. A document changed on one
+    side moves; one removed on a side stays removed there; one changed on
+    both is settled once (the longer wins when it continues the other,
+    otherwise the Mac's text takes the path and the other is kept under
+    `sync-conflicts/<hash>/…` on both). Archiving does not propagate yet.
+- **Skills.** One-way, whole bundles, Mac wins; skills only the target has
+  are kept; system skills are never carried.
+- **Settled differences.** A domain that differs by design (the target
+  keeps items of its own) is remembered by its pair of hashes for the app
+  session and not carried again until either side changes.
+- **Failure isolation.** A domain a backend cannot read is left out of its
+  manifest; a domain whose store fails on apply is reported as skipped and
+  the others still apply.
+
+- **CLI rules files (phase 6).** `cli_home`: the files each coding-agent
+  CLI reads by itself (global instructions, skills, custom commands), listed
+  per CLI in `ironclaw_cli_providers::user_rules` and nowhere else. One
+  file per item, keyed `<root id>/<path>`; one way, Mac wins, nothing
+  deleted, hidden files left out, links followed only inside the root or
+  the home. Logins, tokens and settings files are never listed.
+- **After review (GPT, 2026-11-26).** Memory writes name the version the
+  merge decided on, so an edit that lands mid-pass fails the write instead
+  of being lost; a conflict copy is create-only and confirmed before the
+  original is replaced; a document archived on one side before any pass is
+  recognised by its archived text and not brought back; the base is
+  recorded with a versioned write; an exported document must match its
+  hash. A skill is replaced by writing over it and deleting stale files
+  last. Tool overrides that exist only on the target are kept. An address
+  with a sign-in in it is redacted on export and its section skipped on
+  apply. The carrier stops when sync is switched off, pages the receiver's
+  index, bounds what it names per request, and only remembers a difference
+  as settled after a clean pass. A saved thread title sends an inbox hint.
+  Not done: tolerating fields a newer backend adds to a payload (a
+  mismatch is reported as a failed pass; update the older side).
+
+- **After the second review (2026-11-26).**
+  - `cli_home` walks down from a descriptor of each root, one name at a
+    time and never through a link, for reads and writes alike; hard-linked
+    files and names that look like a sign-in or settings file are held
+    back and said so; files arrive readable by the person only; a name
+    that differs only in case from one already there is not replaced; the
+    digest cache is keyed on size, times, mode and inode.
+  - Memory: the archive tree is each computer's own (not carried) and a
+    document archived there, whatever its last text, stays removed; an
+    existing conflict copy is re-read before it is trusted; a base entry
+    is only moved from the value the pass saw; after a pass that wrote,
+    one more round carries no content and lets both sides record what they
+    hold; memory is gone over once per app session even when it matches.
+  - Pages are cut by encoded weight; an item that changed while the page
+    was cut is named (`not_carried`), so the pass is not taken for clean;
+    a cursor that does not advance fails the pass; `until` must follow
+    `after`.
+  - A pass is bound to the two connections it started on and stopped when
+    either is replaced. Skip reasons from both legs are shown.
+  - Known and left: an older backend rejects a field it does not know
+    (the pass fails and says so; update the older side); the `cli_home`
+    walk runs on the request's task (bounded: 4,000 files, 2,000 names a
+    folder, depth 8, 2 MiB a file).
+
+- **After the third review (2026-11-26).**
+  - Skills: a bundle in which a file would become a folder (or back) is
+    refused before anything is touched; remove the skill on the receiver
+    to take the new one.
+  - `cli_home`: entries are typed (one file, or a folder tree); only
+    names in printable ASCII that do not end in a dot or space are
+    carried, so no other spelling can name a withheld file on a folding
+    volume; the stored spelling is checked at every folder on the way to
+    a write; the root is opened by its own name whatever the path's
+    spelling and only that one folder is ever created; scans count every
+    name looked at and run off the async workers; notes are capped.
+  - Config: an address is read as a client reads it (whitespace and
+    control characters dropped, a web scheme without slashes) before it
+    is checked for a sign-in.
+  - Pages are measured in their real encoded form; a page must list its
+    keys in order, each once.
+  - The carrier's confirming round sends keys and hashes only; a cursor
+    is checked before its page is applied; nothing is remembered as
+    settled after a failed pass; a reply that arrives after a connection
+    was replaced is dropped even before the poll has seen the change.
+  - Known and left: the base's per-path guard is by value, so two other
+    passes that take a path away and back between this pass's read and
+    its write are not noticed.
+
+- **After the fourth review (2026-11-26).**
+  - Memory: each page item says what the sender last agreed on with the
+    receiver (`ConfigSyncItem::base`, asked for with `peer`). A receiver
+    still holding exactly that takes the sender's text even when its own
+    record of the agreement is missing (a pass cut short). A document
+    archived on a computer stays removed there whatever was agreed
+    before and whatever the other side has done since.
+  - Pages: the cursor is the last key dealt with, carried or not, and the
+    first item of a page always goes.
+  - Skills: file and folder types are also asked of the store before the
+    first write (an empty folder is in the way too).
+  - `cli_home`: names are judged by stem and extension (`tokenizer.md`
+    travels, `api_token.txt` and `settings.json.bak` do not); key and
+    certificate files by name, and any file whose bytes hold a private
+    key, are held back; an entry reachable under another spelling of an
+    incoming name is not replaced and a new file is published without
+    replacing; a relative root is not used; every name read counts
+    toward the scan limit and writes run off the async workers.
+
+- **After the fifth review (2026-11-26).**
+  - Keys and secrets are recognised in one place (`items::key_file_name`,
+    `items::secret_bytes`: key and certificate-container names, private
+    key blocks, cluster and cloud sign-in fields, stored tokens).
+  - Skills: a bundle with such a file is not exported and not applied,
+    whole; a receiver's skill that holds one is not replaced. A bundle
+    that names a path twice, or as a file and as a folder, is refused
+    before the first write. A skill that cannot be read is left out of
+    the listing instead of failing the domain.
+  - `cli_home`: the file in an incoming file's place is read before it is
+    replaced and kept when it holds a secret; a scan that stops at its
+    limit always says so.
+  - Known and left (the old text survives in each case): a receiver that
+    deliberately restored an earlier text after a pass was cut short
+    takes the sender's newer text without a conflict copy (the provider's
+    version history has it); a document archived in the instant between
+    the listing and the read can be recreated (its archive copy stays);
+    `notes/a` on one side and `notes/a/b.md` on the other never settle
+    and are reported at every pass.
+
+- **After the sixth review (2026-11-26; verdict "ship after fixes").**
+  - Sync keeps small records of its own under
+    `/system/settings/config-sync/` (`config_sync::notes`).
+  - Before a skill bundle is replaced, the receiver's bundle is copied
+    there (`skill-backups/<tenant>/<user>/<skill>/<digest>`, create-only),
+    so files only it had and edits made on it survive. Before a rules
+    file is replaced, its bytes are kept in the root's hidden
+    `.zlo-sync-backups/` folder. No copy, no replacement.
+  - Approvals: the overrides and grants a pass makes are recorded per
+    source computer. One the source later resets is taken back when it is
+    still as that pass left it; what the receiver set for itself, or
+    changed since, is kept.
+  - Memory: `threads/` (the provider's per-conversation records) is each
+    computer's own, like `archive/`.
+  - Secrets: an environment file (`.env`, not `.env.example`) is a key
+    file. A field name alone is not a secret: it must be followed by a
+    real-looking value (`"access_token": "<token>"` in a document is
+    ordinary). A key block needs a body.
+  - What a side held back is part of its digest, so a pass is made that
+    says it even when everything that can be carried already matches.
+
+- **After the seventh review (2026-11-26; "ship after fixes").**
+  - A rules file's copy is written under a temporary name and given its
+    own only when whole; a copy already there counts only if it is the
+    same bytes.
+  - A skill's bundle is handed to a keeper by the skill store itself,
+    under the lock of the replacement (`ReplacedBundleKeeper`), so what
+    is kept is what is replaced, whatever the listing called it. A folder
+    of that name without a skill in it is not written into.
+  - Approvals: what a pass is about to make is recorded before it is made
+    and stamped afterwards with each record's last-written time. A reset
+    on the source takes back only a record still in that state and not
+    written since, so a restriction set again on the receiver is its own.
+  - An encrypted PEM key (header lines before its body) is recognised.
+
+- **After the eighth review (2026-11-26; "ship after fixes").** A key
+  block counts only when a full line of base64 follows its header (after
+  any `Name: value` lines), so a document that quotes the header is
+  ordinary. An approvals record is read in the form an earlier build
+  wrote. A record is looked at again the moment before it is taken back.
+  Known and left: that last look and the clear are two steps, not one
+  conditional write, so a change made on the receiver in the instant
+  between them can be cleared.
+
+Left: phase 3 (provider catalog and keys), phase 4 (extensions, hooks,
+automations).

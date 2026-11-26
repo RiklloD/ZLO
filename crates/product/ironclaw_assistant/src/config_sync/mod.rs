@@ -2,8 +2,8 @@
 //!
 //! Each syncable domain implements [`ConfigSyncDomainHandler`] in its own
 //! submodule (`config`, `orchestrator_settings`, `prompts`, `approvals`,
-//! `profiles`), so later phases (2–4, 6) only add domain modules and register
-//! them at composition without modifying existing domains.
+//! `profiles`, `skills`, `skill_usage`, `memory`), so a later phase only adds
+//! a domain module and registers it at composition.
 //!
 //! Invariants:
 //! - Every domain reaches its state through the owning service/port, never raw
@@ -19,10 +19,18 @@
 //!   touched.
 
 pub mod approvals;
+#[cfg(unix)]
+pub mod cli_home;
 pub mod config;
+pub mod items;
+pub mod memory;
+pub mod memory_base;
+pub mod notes;
 pub mod orchestrator_settings;
 pub mod profiles;
 pub mod prompts;
+pub mod skill_usage;
+pub mod skills;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -88,6 +96,13 @@ pub struct ConfigSyncContext {
     pub caller: ProductSurfaceCaller,
     pub data_folder: String,
     pub home_dir: String,
+    /// Export: how an itemized domain's page is cut.
+    pub page: items::PageRequest,
+    /// Apply: the return leg of a two-way domain (see
+    /// `ConfigSyncApplyRequest::merge_back`).
+    pub merge_back: bool,
+    /// Apply: the installation the snapshot came from.
+    pub peer_environment_id: Option<String>,
 }
 
 impl ConfigSyncContext {
@@ -217,6 +232,9 @@ impl ConfigSyncService {
             caller,
             data_folder: self.data_folder.clone(),
             home_dir: self.home_dir.clone(),
+            page: items::PageRequest::default(),
+            merge_back: false,
+            peer_environment_id: None,
         }
     }
 
@@ -240,7 +258,15 @@ impl ConfigSyncService {
         let ctx = self.context(caller);
         let mut domains = BTreeMap::new();
         for (domain, handler) in &self.handlers {
-            let digest = handler.manifest(&ctx).await?;
+            // A domain that cannot be read here is left out, so the others
+            // still sync; the carrier only moves domains both sides list.
+            let digest = match handler.manifest(&ctx).await {
+                Ok(digest) => digest,
+                Err(error) => {
+                    tracing::debug!(domain = domain.as_str(), %error, "config sync: domain left out of the manifest");
+                    continue;
+                }
+            };
             tracing::debug!(
                 domain = domain.as_str(),
                 hash = %digest.hash,
@@ -257,17 +283,29 @@ impl ConfigSyncService {
         })
     }
 
-    /// Export the requested domains (or all registered domains when `domains`
-    /// is empty) as a [`ConfigSnapshotV1`].
+    /// Export the requested domains as a [`ConfigSnapshotV1`]. An empty
+    /// `domains` means every registered domain that is not itemized; an
+    /// itemized one is asked for by name, alone, one page at a time.
     pub async fn export(
         &self,
         caller: ProductSurfaceCaller,
         request: ConfigSyncExportRequest,
     ) -> Result<ConfigSnapshotV1, ConfigSyncError> {
         let environment_id = self.environment_id().await?;
-        let ctx = self.context(caller);
+        let mut ctx = self.context(caller);
+        ctx.page = items::PageRequest {
+            index_only: request.index_only,
+            have: request.have,
+            after: request.after,
+            until: request.until,
+            peer: request.peer,
+        };
         let selected: BTreeSet<ConfigSyncDomain> = if request.domains.is_empty() {
-            self.handlers.keys().copied().collect()
+            self.handlers
+                .keys()
+                .copied()
+                .filter(|domain| !domain.itemized())
+                .collect()
         } else {
             request.domains.into_iter().collect()
         };
@@ -305,7 +343,9 @@ impl ConfigSyncService {
         self.validate_apply_request(&request)?;
 
         let target_environment_id = self.environment_id().await?;
-        let ctx = self.context(caller);
+        let mut ctx = self.context(caller);
+        ctx.merge_back = request.merge_back;
+        ctx.peer_environment_id = Some(request.snapshot.source_environment_id.clone());
         let selected: Vec<ConfigSyncDomain> = if request.domains.is_empty() {
             request.snapshot.domains.keys().copied().collect()
         } else {
@@ -349,7 +389,16 @@ impl ConfigSyncService {
                 continue;
             };
 
-            let result = handler.apply(&ctx, payload).await?;
+            // The snapshot was validated as a whole above; a domain whose
+            // store fails now is reported and the others still apply.
+            let result = match handler.apply(&ctx, payload).await {
+                Ok(result) => result,
+                Err(error @ ConfigSyncError::Validation { .. }) => return Err(error),
+                Err(error) => {
+                    tracing::debug!(domain = domain.as_str(), %error, "config sync: domain not applied");
+                    DomainApplyResult::skipped_with_reason(error.to_string(), 0)
+                }
+            };
             tracing::debug!(
                 domain = domain.as_str(),
                 status = result.outcome.status.as_str(),
@@ -544,12 +593,46 @@ fn parse_raw_export_request(raw: Value) -> Result<ConfigSyncExportRequest, (Stri
         ));
     };
     for key in obj.keys() {
-        if key != "domains" {
+        if !matches!(
+            key.as_str(),
+            "domains" | "index_only" | "have" | "after" | "until" | "peer"
+        ) {
             return Err((
                 key.clone(),
                 format!("unknown field `{key}` in export request"),
             ));
         }
+    }
+    // A page belongs to one itemized domain.
+    let paged = ["index_only", "have", "after", "until"].iter().any(|key| {
+        obj.get(*key)
+            .is_some_and(|v| !v.is_null() && v != &Value::Bool(false))
+    });
+    let names: Vec<&str> = obj
+        .get("domains")
+        .and_then(Value::as_array)
+        .map(|arr| arr.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    let itemized = names
+        .iter()
+        .filter(|name| ConfigSyncDomain::from_wire(name).is_some_and(ConfigSyncDomain::itemized))
+        .count();
+    // A window that ends at or before where the page starts is no window.
+    if let (Some(after), Some(until)) = (
+        obj.get("after").and_then(Value::as_str),
+        obj.get("until").and_then(Value::as_str),
+    ) && until <= after
+    {
+        return Err((
+            "until".to_string(),
+            "`until` must come after `after`".to_string(),
+        ));
+    }
+    if (paged || itemized > 0) && (names.len() != 1 || itemized != 1) {
+        return Err((
+            "domains".to_string(),
+            "an itemized domain is exported alone, one page at a time".to_string(),
+        ));
     }
     if let Some(domains_val) = obj.get("domains") {
         let Some(arr) = domains_val.as_array() else {
@@ -599,7 +682,7 @@ fn parse_raw_apply_request(raw: Value) -> Result<ConfigSyncApplyRequest, (String
         ));
     };
     for key in obj.keys() {
-        if key != "snapshot" && key != "domains" {
+        if !matches!(key.as_str(), "snapshot" | "domains" | "merge_back") {
             return Err((
                 key.clone(),
                 format!("unknown field `{key}` in apply request"),

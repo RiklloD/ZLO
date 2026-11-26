@@ -2224,7 +2224,9 @@ fn operator_config_sync_export_descriptor() -> IngressRouteDescriptor {
         WEBUI_V2_ROUTE_OPERATOR_CONFIG_SYNC_EXPORT,
         NetworkMethod::Post,
         WEBUI_V2_PATTERN_OPERATOR_CONFIG_SYNC_EXPORT,
-        16,
+        // A page request names what the other side already holds (item
+        // key to hash), up to a page's worth of items.
+        1024,
     )
 }
 

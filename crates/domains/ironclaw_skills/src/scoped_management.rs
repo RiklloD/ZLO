@@ -16,7 +16,7 @@ use crate::{
     SkillUpdateRequest, SkillUpdateResult, install_skill, list_skills,
     management::{
         SKILL_FILE_NAME, SkillBundleSnapshot, USER_SKILLS_ROOT, capture_skill_bundle,
-        restore_skill_bundle,
+        replace_skill_bundle, restore_skill_bundle,
     },
     read_skill_content, remove_skill, search_skills, update_skill,
 };
@@ -159,6 +159,51 @@ impl ScopedSkillManagementPort {
             name: snapshot.name,
             source,
         })
+    }
+
+    /// Every file of one of the person's skills, by its path inside the
+    /// skill (configuration sync's export).
+    pub async fn export_bundle_for_scope(
+        &self,
+        scope: ResourceScope,
+        name: &str,
+    ) -> Result<Vec<(String, Vec<u8>)>, ScopedSkillManagementError> {
+        let context = self.context_for_scope(scope)?;
+        Ok(capture_skill_bundle(&context, name).await?.into_files())
+    }
+
+    /// Put a whole bundle in place of the skill of that name, or create it
+    /// (configuration sync's apply). The bundle must hold a `SKILL.md`.
+    /// Nothing is removed before the new files are written, so an
+    /// interrupted replacement leaves a skill that still loads.
+    pub async fn replace_bundle_for_scope(
+        &self,
+        scope: ResourceScope,
+        name: &str,
+        files: Vec<(String, Vec<u8>)>,
+    ) -> Result<(), ScopedSkillManagementError> {
+        self.replace_bundle_keeping_for_scope(scope, name, files, None)
+            .await
+    }
+
+    /// [`Self::replace_bundle_for_scope`], handing the bundle that is
+    /// about to be replaced to `keeper` first, under the same lock. When it
+    /// cannot be kept, nothing is replaced.
+    pub async fn replace_bundle_keeping_for_scope(
+        &self,
+        scope: ResourceScope,
+        name: &str,
+        files: Vec<(String, Vec<u8>)>,
+        keeper: Option<&dyn crate::ReplacedBundleKeeper>,
+    ) -> Result<(), ScopedSkillManagementError> {
+        let context = self.context_for_scope(scope)?;
+        Ok(replace_skill_bundle(
+            &context,
+            name,
+            SkillBundleSnapshot::from_files(files),
+            keeper,
+        )
+        .await?)
     }
 
     pub async fn update_for_scope(

@@ -28,6 +28,7 @@ pub mod session_import;
 pub mod skill_listing;
 mod slot;
 mod steer_door;
+pub mod user_rules;
 mod workspace;
 
 use std::path::PathBuf;

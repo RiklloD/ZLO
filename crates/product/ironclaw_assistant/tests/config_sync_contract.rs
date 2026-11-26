@@ -154,6 +154,7 @@ async fn a_snapshot_from_one_host_lands_on_the_other_and_keeps_its_local_section
             ConfigSyncApplyRequest {
                 snapshot: snapshot.clone(),
                 domains: Vec::new(),
+                merge_back: false,
             },
         )
         .await
@@ -196,6 +197,7 @@ async fn a_snapshot_from_one_host_lands_on_the_other_and_keeps_its_local_section
             ConfigSyncApplyRequest {
                 snapshot,
                 domains: Vec::new(),
+                merge_back: false,
             },
         )
         .await
@@ -226,6 +228,7 @@ async fn only_the_asked_domains_are_applied() {
             ConfigSyncApplyRequest {
                 snapshot,
                 domains: vec![ConfigSyncDomain::Prompts],
+                merge_back: false,
             },
         )
         .await
@@ -368,6 +371,7 @@ async fn profiles_and_settings_follow_the_source_and_keep_what_only_the_target_h
             ConfigSyncApplyRequest {
                 snapshot: snapshot.clone(),
                 domains: Vec::new(),
+                merge_back: false,
             },
         )
         .await
@@ -406,6 +410,7 @@ async fn profiles_and_settings_follow_the_source_and_keep_what_only_the_target_h
             ConfigSyncApplyRequest {
                 snapshot,
                 domains: Vec::new(),
+                merge_back: false,
             },
         )
         .await

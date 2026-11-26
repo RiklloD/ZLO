@@ -38,20 +38,104 @@ pub struct ApprovalsDomainHandler {
     overrides: Arc<dyn CapabilityPermissionOverrideStorePort>,
     persistent_policies: Arc<dyn PersistentApprovalPolicyStorePort>,
     tool_catalog: Arc<dyn RebornOperatorToolCatalog>,
+    /// Where the overrides and grants a sync made here are remembered, so
+    /// one the source later resets can be taken back.
+    notes: Arc<dyn super::notes::SyncNotes>,
 }
 
+/// One override or grant a pass made here: the state it set, and when the
+/// record that holds it was last written, as read back after the pass.
+/// `at` is `None` between the note of an intent and the pass's end.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(from = "MadeEntryWire")]
+struct MadeEntry {
+    state: ToolApprovalSyncState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    at: Option<DateTime<Utc>>,
+}
+
+/// A record as it may be found: as written now, or the bare state an
+/// earlier build wrote (read as an entry that was never stamped).
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum MadeEntryWire {
+    Stamped {
+        state: ToolApprovalSyncState,
+        #[serde(default)]
+        at: Option<DateTime<Utc>>,
+    },
+    Bare(ToolApprovalSyncState),
+}
+
+impl From<MadeEntryWire> for MadeEntry {
+    fn from(wire: MadeEntryWire) -> Self {
+        match wire {
+            MadeEntryWire::Stamped { state, at } => Self { state, at },
+            MadeEntryWire::Bare(state) => Self { state, at: None },
+        }
+    }
+}
+
+/// What sync made here for one other computer, by tool.
+type Made = BTreeMap<String, MadeEntry>;
+
 impl ApprovalsDomainHandler {
+    /// The record's path, when there is a place to keep one and the ids
+    /// can name it.
+    fn made_path(ctx: &ConfigSyncContext) -> Option<[String; 4]> {
+        let names = [
+            "approvals-made".to_string(),
+            ctx.caller.tenant_id.as_str().to_string(),
+            ctx.caller.user_id.as_str().to_string(),
+            ctx.peer_environment_id.clone()?,
+        ];
+        names
+            .iter()
+            .all(|name| super::notes::safe_name(name))
+            .then_some(names)
+    }
+
+    async fn made(&self, ctx: &ConfigSyncContext) -> Result<Made, ConfigSyncError> {
+        let Some(path) = Self::made_path(ctx) else {
+            return Ok(Made::new());
+        };
+        let path: Vec<&str> = path.iter().map(String::as_str).collect();
+        match self.notes.read(&path).await? {
+            Some(bytes) => {
+                serde_json::from_slice(&bytes).map_err(|source| ConfigSyncError::Serialization {
+                    domain: ConfigSyncDomain::Approvals,
+                    source,
+                })
+            }
+            None => Ok(Made::new()),
+        }
+    }
+
+    async fn remember(&self, ctx: &ConfigSyncContext, made: &Made) -> Result<(), ConfigSyncError> {
+        let Some(path) = Self::made_path(ctx) else {
+            return Ok(());
+        };
+        let path: Vec<&str> = path.iter().map(String::as_str).collect();
+        let bytes = serde_json::to_vec(made).map_err(|source| ConfigSyncError::Serialization {
+            domain: ConfigSyncDomain::Approvals,
+            source,
+        })?;
+        self.notes.write(&path, &bytes).await
+    }
+
     pub fn new(
         auto_approve: Arc<dyn AutoApproveSettingStorePort>,
         overrides: Arc<dyn CapabilityPermissionOverrideStorePort>,
         persistent_policies: Arc<dyn PersistentApprovalPolicyStorePort>,
         tool_catalog: Arc<dyn RebornOperatorToolCatalog>,
+        notes: Arc<dyn super::notes::SyncNotes>,
     ) -> Self {
         Self {
             auto_approve,
             overrides,
             persistent_policies,
             tool_catalog,
+            notes,
         }
     }
 
@@ -152,6 +236,50 @@ impl ApprovalsDomainHandler {
             })
             .collect();
         Ok((global_auto_approve, tool_overrides, latest_updated))
+    }
+
+    /// When the record that decides each tool's state was last written:
+    /// a change made on this computer since, even back to the same state,
+    /// moves it.
+    async fn stamps(
+        &self,
+        ctx: &ConfigSyncContext,
+    ) -> Result<BTreeMap<String, DateTime<Utc>>, ConfigSyncError> {
+        let scope = Self::settings_scope(ctx);
+        let store = |error: &dyn std::fmt::Display| ConfigSyncError::Store {
+            domain: ConfigSyncDomain::Approvals,
+            reason: error.to_string(),
+        };
+        let mut out = BTreeMap::new();
+        if self.persistent_policies.supports_scope_listing() {
+            for policy in self
+                .persistent_policies
+                .list_for_scope_action(&scope, PersistentApprovalAction::Dispatch)
+                .await
+                .map_err(|error| store(&error))?
+            {
+                if policy.active_grant().is_some() {
+                    out.insert(
+                        policy.key.capability_id.as_str().to_string(),
+                        policy.updated_at,
+                    );
+                }
+            }
+        }
+        if self.overrides.supports_scope_listing() {
+            for record in self
+                .overrides
+                .list_for_scope(&scope)
+                .await
+                .map_err(|error| store(&error))?
+            {
+                out.insert(
+                    record.key.capability_id.as_str().to_string(),
+                    record.updated_at,
+                );
+            }
+        }
+        Ok(out)
     }
 
     fn hash_state(
@@ -268,6 +396,31 @@ impl ConfigSyncDomainHandler for ApprovalsDomainHandler {
         let mut applied_count: u64 = 0;
         let mut skipped_count: u64 = 0;
         let mut warnings = Vec::new();
+        // What earlier passes from this computer made here, and what this
+        // one leaves standing.
+        let made_before = self.made(ctx).await?;
+        let stamps_before = self.stamps(ctx).await?;
+        // Still as a pass left it: the same state, in a record not written
+        // since (an entry noted but never stamped goes by its state).
+        let untouched = |cap_id: &str, entry: &MadeEntry| {
+            current_map.get(cap_id) == Some(&entry.state)
+                && entry
+                    .at
+                    .is_none_or(|at| stamps_before.get(cap_id) == Some(&at))
+        };
+        let mut made: BTreeMap<String, ToolApprovalSyncState> = BTreeMap::new();
+        // What this pass is about to make is noted before it is made: a
+        // grant must never stand on this computer without a note that
+        // sync put it there, or it could not be taken back.
+        let mut intent = made_before.clone();
+        for (&cap_id, &state) in &desired_map {
+            if current_map.get(cap_id) != Some(&state) {
+                intent.insert(cap_id.to_string(), MadeEntry { state, at: None });
+            }
+        }
+        if intent != made_before {
+            self.remember(ctx, &intent).await?;
+        }
 
         // 1. Global auto-approve toggle.
         if current_auto != p.global_auto_approve {
@@ -290,6 +443,13 @@ impl ConfigSyncDomainHandler for ApprovalsDomainHandler {
         // 2. Upsert incoming per-tool overrides.
         for (&cap_id, &desired_state) in &desired_map {
             if current_map.get(cap_id) == Some(&desired_state) {
+                // Still as a pass made it: still sync's to take back.
+                if made_before
+                    .get(cap_id)
+                    .is_some_and(|entry| untouched(cap_id, entry))
+                {
+                    made.insert(cap_id.to_string(), desired_state);
+                }
                 skipped_count += 1;
                 continue;
             }
@@ -342,6 +502,7 @@ impl ConfigSyncDomainHandler for ApprovalsDomainHandler {
                             domain: ConfigSyncDomain::Approvals,
                             reason: error.to_string(),
                         })?;
+                    made.insert(cap_id.to_string(), desired_state);
                     applied_count += 1;
                 }
                 ToolApprovalSyncState::AlwaysAllow => {
@@ -390,22 +551,31 @@ impl ConfigSyncDomainHandler for ApprovalsDomainHandler {
                             domain: ConfigSyncDomain::Approvals,
                             reason: error.to_string(),
                         })?;
+                    made.insert(cap_id.to_string(), desired_state);
                     applied_count += 1;
                 }
             }
         }
 
-        // 3. Clear overrides/grants that were removed on the source (reverts to default).
-        for (&cap_id, &prev_state) in &current_map {
-            if desired_map.contains_key(cap_id) {
+        // 3. A tool the source no longer mentions. What this computer set
+        // for itself is kept: only an override or grant an earlier pass
+        // made here, and that is still as that pass left it, is taken back
+        // (the source reset it; left standing, a grant would keep allowing
+        // a tool the person has put back to asking).
+        for (cap_id, entry) in &made_before {
+            if desired_map.contains_key(cap_id.as_str()) || !untouched(cap_id, entry) {
                 continue;
             }
-            let capability_id =
-                CapabilityId::new(cap_id).map_err(|error| ConfigSyncError::Store {
-                    domain: ConfigSyncDomain::Approvals,
-                    reason: error.to_string(),
-                })?;
-            match prev_state {
+            let was = &entry.state;
+            // Looked at again the moment before it is taken back: a change
+            // made on this computer while the pass ran is this computer's.
+            if entry.at.is_some() && self.stamps(ctx).await?.get(cap_id) != entry.at.as_ref() {
+                continue;
+            }
+            let Ok(capability_id) = CapabilityId::new(cap_id.as_str()) else {
+                continue;
+            };
+            match was {
                 ToolApprovalSyncState::AskEachTime | ToolApprovalSyncState::Disabled => {
                     self.overrides
                         .clear(&CapabilityPermissionOverrideKey::new(&scope, capability_id))
@@ -417,26 +587,46 @@ impl ConfigSyncDomainHandler for ApprovalsDomainHandler {
                     applied_count += 1;
                 }
                 ToolApprovalSyncState::AlwaysAllow => {
-                    if let Some(tool) = tools_by_id.get(cap_id) {
-                        let policy_key = PersistentApprovalPolicyKey::new(
-                            &scope,
-                            PersistentApprovalAction::Dispatch,
-                            tool.capability_id.clone(),
-                            Principal::Extension(tool.provider.clone()),
-                        );
-                        match self.persistent_policies.revoke(&policy_key).await {
-                            Ok(_) | Err(PersistentApprovalPolicyError::UnknownPolicy) => {}
-                            Err(error) => {
-                                return Err(ConfigSyncError::Store {
-                                    domain: ConfigSyncDomain::Approvals,
-                                    reason: error.to_string(),
-                                });
-                            }
+                    let Some(tool) = tools_by_id.get(cap_id.as_str()) else {
+                        // Not here to revoke now: still remembered.
+                        made.insert(cap_id.clone(), *was);
+                        continue;
+                    };
+                    let policy_key = PersistentApprovalPolicyKey::new(
+                        &scope,
+                        PersistentApprovalAction::Dispatch,
+                        tool.capability_id.clone(),
+                        Principal::Extension(tool.provider.clone()),
+                    );
+                    match self.persistent_policies.revoke(&policy_key).await {
+                        Ok(_) | Err(PersistentApprovalPolicyError::UnknownPolicy) => {}
+                        Err(error) => {
+                            return Err(ConfigSyncError::Store {
+                                domain: ConfigSyncDomain::Approvals,
+                                reason: error.to_string(),
+                            });
                         }
-                        applied_count += 1;
                     }
+                    applied_count += 1;
                 }
             }
+        }
+        // Each entry is stamped with its record as it stands now, so a
+        // later change on this computer can be told from sync's own.
+        let stamps_after = self.stamps(ctx).await?;
+        let made: Made = made
+            .into_iter()
+            .map(|(cap_id, state)| {
+                let at = stamps_after.get(&cap_id).copied();
+                (cap_id, MadeEntry { state, at })
+            })
+            .collect();
+        if made != intent
+            && let Err(error) = self.remember(ctx, &made).await
+        {
+            // The intent noted above still stands for these entries.
+            tracing::debug!(%error, "config sync: approvals record not updated");
+            warnings.push("what this sync set could not be fully recorded".to_string());
         }
 
         let status = if applied_count > 0 {
@@ -454,5 +644,26 @@ impl ConfigSyncDomainHandler for ApprovalsDomainHandler {
             },
             restart_required: Vec::new(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_record_from_an_earlier_build_is_read_as_unstamped() {
+        let made: Made = serde_json::from_str(
+            r#"{"demo.old":"always_allow","demo.new":{"state":"disabled","at":"2026-11-26T10:00:00Z"},"demo.pending":{"state":"ask_each_time"}}"#,
+        )
+        .expect("record");
+        assert_eq!(made["demo.old"].state, ToolApprovalSyncState::AlwaysAllow);
+        assert_eq!(made["demo.old"].at, None);
+        assert!(made["demo.new"].at.is_some());
+        assert_eq!(made["demo.pending"].at, None);
+        // And it is written back in the current form.
+        let again: Made =
+            serde_json::from_str(&serde_json::to_string(&made).expect("json")).expect("round trip");
+        assert_eq!(again, made);
     }
 }

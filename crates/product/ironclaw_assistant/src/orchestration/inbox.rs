@@ -554,6 +554,8 @@ pub(super) struct ThreadTitler {
     /// Threads with a title call running, and whether another turn
     /// completed meanwhile (the call then runs again once it ends).
     running: StdMutex<HashMap<ThreadId, bool>>,
+    /// Told when a title is saved (it lands after the turn's own hint).
+    hints: Option<Arc<crate::inbox_hints::InboxHintBus>>,
 }
 
 /// Replies this recent are checked at startup: the journal replays turns
@@ -561,11 +563,16 @@ pub(super) struct ThreadTitler {
 const STARTUP_SCAN_MS: Millis = 24 * 60 * 60 * 1000;
 
 impl ThreadTitler {
-    fn new(engine: Weak<Engine>, surface: Weak<dyn ProductSurface>) -> Self {
+    fn new(
+        engine: Weak<Engine>,
+        surface: Weak<dyn ProductSurface>,
+        hints: Option<Arc<crate::inbox_hints::InboxHintBus>>,
+    ) -> Self {
         Self {
             engine,
             surface,
             running: StdMutex::new(HashMap::new()),
+            hints,
         }
     }
 
@@ -587,7 +594,12 @@ impl ThreadTitler {
         let titler = Arc::clone(self);
         tokio::spawn(async move {
             loop {
-                if let Err(error) = titler.title_if_due(&thread).await {
+                let titled = titler.title_if_due(&thread).await;
+                if let (Ok(Some(_)), Some(hints)) = (&titled, &titler.hints) {
+                    let (scope, id) = (&thread.scope, thread.thread_id.as_str());
+                    let user = Some(scope.user_id.clone());
+                    hints.notify(scope.tenant_id.clone(), user, Some(id.to_string()));
+                } else if let Err(error) = titled {
                     tracing::debug!(?error, "thread title skipped");
                 }
                 let mut running = titler.running();
@@ -712,10 +724,12 @@ impl ThreadTitler {
 pub(super) fn title_on_completion(
     engine: &Arc<Engine>,
     surface: &Arc<dyn ProductSurface>,
+    hints: Option<Arc<crate::inbox_hints::InboxHintBus>>,
 ) -> Arc<ThreadTitler> {
     let titler = Arc::new(ThreadTitler::new(
         Arc::downgrade(engine),
         Arc::downgrade(surface),
+        hints,
     ));
     engine.set_turn_listener(Arc::new(TitleOnCompletion(Arc::clone(&titler))));
     if let Ok(runtime) = tokio::runtime::Handle::try_current() {
@@ -1350,7 +1364,15 @@ mod tests {
 
         // Wiring scans recent replies: titled from the first exchange,
         // which sits a page behind a long tool run. The pin is kept.
-        let titler = title_on_completion(&engine, &surface);
+        let moment = std::time::Duration::from_millis(300);
+        let hints = crate::inbox_hints::InboxHintBus::with_coalesce_window(moment / 300);
+        let (tenant, user) = (scope.tenant_id.clone(), scope.user_id.clone());
+        let stream =
+            hints.subscribe_for_caller(&ProductSurfaceCaller::new(tenant, user, None, None));
+        let hints = Arc::new(hints);
+        // Whether a hint reaches the person's stream within a moment.
+        let hinted = || async { tokio::time::timeout(moment, stream.next()).await.is_ok() };
+        let titler = title_on_completion(&engine, &surface, Some(hints));
         for _ in 0..300 {
             if calls() == 1 {
                 break;
@@ -1369,6 +1391,7 @@ mod tests {
             }
         };
         assert_eq!(calls(), 1);
+        assert!(hinted().await, "a hint for the saved title");
         assert_eq!(
             title().await,
             (
@@ -1385,12 +1408,14 @@ mod tests {
         reply("r3").await;
         reply("r3").await;
         assert_eq!(calls(), 1);
+        assert!(!hinted().await, "no title saved, no hint");
 
         // The third reply since the title: the model re-reads the latest
         // messages and the inbox follows the new topic.
         LATER_EXCHANGES.store(3, std::sync::atomic::Ordering::SeqCst);
         reply("r4").await;
         assert_eq!(calls(), 2);
+        assert!(hinted().await, "the new title is hinted");
         assert_eq!(title().await.0.as_deref(), Some("Deploy pipeline rollout"));
 
         // A slower request that read the title before that one cannot

@@ -15,9 +15,11 @@
 //! `docs/internal/plans/2026-11-26-zlo-config-sync.md`.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use zlo_client::config_sync::{Side, SyncOutcome, SyncReport, sync_once};
+use zlo_client::config_sync::{Side, SyncMemo, SyncOutcome, SyncReport, sync_once};
 use zlo_client::environments::THIS_MAC;
 use zlo_client::{Backend, ClientError};
 
@@ -47,9 +49,18 @@ struct Row {
     phase: Phase,
     /// The pass in flight; a reply from any other pass is dropped.
     running: Option<u64>,
+    /// The connections the pass in flight runs on: This Mac's generation
+    /// and this computer's.
+    on: Option<(u64, u64)>,
+    /// Tells the pass in flight to send nothing further (set when this
+    /// row goes: sync switched off, or the computer disconnected).
+    stop: Arc<AtomicBool>,
     checked_at: Option<Instant>,
     /// Checked again on the next [`sync`].
     due: bool,
+    /// Domains that differ by design and need no carrying
+    /// (`zlo_client::config_sync::SyncMemo`).
+    memo: SyncMemo,
     /// Config sections waiting for that computer's IronClaw to restart.
     /// Kept across later passes; forgotten when its connection goes.
     restart: Vec<String>,
@@ -93,19 +104,22 @@ pub fn set_enabled(s: &mut State, key: &str, on: bool) {
     });
     if on {
         sync_now(s, &key);
-    } else {
-        s.remote.config_sync.rows.remove(&key);
+    } else if let Some(row) = s.remote.config_sync.rows.remove(&key) {
+        row.stop.store(true, Ordering::Relaxed);
     }
 }
 
 /// The person's "Sync now".
 pub fn sync_now(s: &mut State, key: &str) {
-    s.remote
+    let row = s
+        .remote
         .config_sync
         .rows
         .entry(key.to_string())
-        .or_default()
-        .due = true;
+        .or_default();
+    row.due = true;
+    // Asked for by hand: everything is compared again.
+    row.memo.clear();
     sync(s);
 }
 
@@ -122,16 +136,18 @@ fn mark_due(s: &mut State, gap: Duration) {
     }
 }
 
-/// Every ready connection: the focused computer, then the peers.
-fn connections(s: &State) -> Vec<(String, Backend)> {
+/// Every ready connection, with the generation that names it: the focused
+/// computer, then the peers.
+fn connections(s: &State) -> Vec<(String, u64, Backend)> {
     let mut out = Vec::new();
     if matches!(s.conn, Conn::Ready)
         && let Some(backend) = s.rt.backend.as_ref()
     {
-        out.push((s.onboarding.computer.key(), backend.clone()));
+        let generation = s.remote.tag.generation.0;
+        out.push((s.onboarding.computer.key(), generation, backend.clone()));
     }
-    for (key, _, backend) in super::peers::stream_targets(s) {
-        out.push((key, backend));
+    for (key, generation, backend) in super::peers::stream_targets(s) {
+        out.push((key, generation.0, backend));
     }
     out
 }
@@ -149,19 +165,38 @@ pub fn sync(s: &mut State) {
     let mut connections = connections(s);
     let source = connections
         .iter()
-        .position(|(key, _)| key == THIS_MAC)
-        .map(|at| connections.swap_remove(at).1);
-    let connected: HashSet<&str> = connections.iter().map(|(key, _)| key.as_str()).collect();
+        .position(|(key, _, _)| key == THIS_MAC)
+        .map(|at| connections.swap_remove(at));
+    let source_generation = source.as_ref().map(|(_, generation, _)| *generation);
+    let source = source.map(|(_, _, backend)| backend);
+    let connected: HashSet<&str> = connections.iter().map(|(key, _, _)| key.as_str()).collect();
     // A computer whose connection went is checked afresh when it is back,
     // and by then it has restarted or not: the note goes with it.
-    s.remote
-        .config_sync
-        .rows
-        .retain(|key, _| connected.contains(key.as_str()));
-    let Some(source) = source else {
+    s.remote.config_sync.rows.retain(|key, row| {
+        let stays = connected.contains(key.as_str());
+        if !stays {
+            row.stop.store(true, Ordering::Relaxed);
+        }
+        stays
+    });
+    // A pass belongs to the two connections it was started on. When
+    // either is replaced (even under the same computer's name) or This Mac
+    // goes, it is stopped, its reply will find no pass waiting, and the
+    // computer is checked again on the connections there are now.
+    for (key, generation, _) in &connections {
+        if let Some(row) = s.remote.config_sync.rows.get_mut(key)
+            && row.running.is_some()
+            && row.on != source_generation.map(|source| (source, *generation))
+        {
+            row.stop.store(true, Ordering::Relaxed);
+            row.running = None;
+            row.due = true;
+        }
+    }
+    let (Some(source), Some(source_generation)) = (source, source_generation) else {
         return;
     };
-    for (key, target) in &connections {
+    for (key, generation, target) in &connections {
         if !enabled(s, key) {
             continue;
         }
@@ -174,31 +209,60 @@ pub fn sync(s: &mut State) {
         state.next_run += 1;
         let run = state.next_run;
         row.running = Some(run);
+        row.on = Some((source_generation, *generation));
         row.due = false;
+        let memo = row.memo.clone();
+        row.stop = Arc::new(AtomicBool::new(false));
+        let stop = Arc::clone(&row.stop);
         let delivery = s.rt.delivery();
         let from = source.client().clone();
         let key = key.clone();
         // Only clients travel: no backend is dropped off the UI thread.
         target.spawn(move |to| async move {
-            let result = sync_once(&from, &to, &BTreeSet::new()).await;
+            let result = sync_once(&from, &to, &BTreeSet::new(), memo, &stop).await;
             delivery.deliver(move |s, _| finished(s, &key, run, result));
         });
     }
 }
 
-fn finished(s: &mut State, key: &str, run: u64, result: Result<SyncOutcome, ClientError>) -> bool {
+fn finished(
+    s: &mut State,
+    key: &str,
+    run: u64,
+    result: Result<(SyncOutcome, SyncMemo), ClientError>,
+) -> bool {
     crate::energy::hit(crate::energy::C::UpdateJob);
     if s.fixture {
         return false;
     }
+    // The connections there are now, as a pass on them would be named.
+    let live = connections(s);
+    let generation = |wanted: &str| {
+        live.iter()
+            .find(|(key, _, _)| key == wanted)
+            .map(|(_, generation, _)| *generation)
+    };
+    let now = generation(THIS_MAC).zip(generation(key));
     let Some(row) = s.remote.config_sync.rows.get_mut(key) else {
         return false;
     };
     if row.running != Some(run) {
         return false;
     }
+    // A reply that arrives after either connection was replaced, before
+    // the poll has seen it: not taken, and the computer is checked again.
+    if row.on != now {
+        row.running = None;
+        row.due = true;
+        row.memo.clear();
+        return true;
+    }
     row.running = None;
     row.checked_at = Some(Instant::now());
+    let result = result.map(|(outcome, memo)| {
+        row.memo = memo;
+        outcome
+    });
     row.phase = match result {
         Ok(SyncOutcome::UpToDate) => Phase::Matches,
         Ok(SyncOutcome::Applied(report)) => {
@@ -211,6 +275,9 @@ fn finished(s: &mut State, key: &str, run: u64, result: Result<SyncOutcome, Clie
         }
         Ok(SyncOutcome::Unsupported(side)) => Phase::NeedsUpdate(side),
         Err(e) => {
+            // What an interrupted pass left behind is unknown: nothing is
+            // taken for settled until a whole pass says so.
+            row.memo.clear();
             tracing::debug!(computer = %key, error = %e, "configuration sync failed");
             Phase::Failed(super::first_line(&e.to_string()))
         }
@@ -289,6 +356,19 @@ pub fn line(s: &State, key: &str, label: &str) -> Option<Line> {
                 let (domain, why) = &report.skipped[0];
                 (
                     format!("Settings synced, except {}: {why}", domain_name(*domain)),
+                    Tone::Warn,
+                )
+            }
+            // Something could not be carried, or was kept twice: say which.
+            Some(Phase::Synced(report)) if !report.warnings.is_empty() => {
+                let more = report.warnings.len() - 1;
+                let rest = if more == 0 {
+                    String::new()
+                } else {
+                    format!(" (and {more} more)")
+                };
+                (
+                    format!("Settings synced. Note: {}{rest}", report.warnings[0]),
                     Tone::Warn,
                 )
             }

@@ -47,6 +47,18 @@ pub enum ConfigSyncDomain {
     /// Agent profiles (`orch_profiles`, with `$HOME`/`$ZLO_HOME` path
     /// normalization).
     Profiles,
+    /// The person's own skills, whole bundles (never system skills).
+    Skills,
+    /// Skill pins and the usage ledger. Two-way: uses merge, pins follow
+    /// the source.
+    SkillUsage,
+    /// Local memory documents. Two-way: a document changed on one side
+    /// moves to the other; one changed on both is kept twice.
+    Memory,
+    /// The person's own rules and skills files in the homes of the coding
+    /// agent CLIs (never their logins or settings). One way; files only the
+    /// receiver has are kept.
+    CliHome,
 }
 
 impl ConfigSyncDomain {
@@ -57,7 +69,24 @@ impl ConfigSyncDomain {
         Self::Prompts,
         Self::Approvals,
         Self::Profiles,
+        Self::Skills,
+        Self::SkillUsage,
+        Self::Memory,
+        Self::CliHome,
     ];
+
+    /// Sent in pages of items ([`ItemizedDomainPayload`]), one domain per
+    /// export, so a large domain never needs one oversized snapshot.
+    pub const fn itemized(self) -> bool {
+        matches!(self, Self::Skills | Self::Memory | Self::CliHome)
+    }
+
+    /// Both computers write it: after the source's changes are applied to
+    /// the target, the target's are applied back with
+    /// [`ConfigSyncApplyRequest::merge_back`].
+    pub const fn two_way(self) -> bool {
+        matches!(self, Self::SkillUsage | Self::Memory)
+    }
 
     /// Canonical wire name for this domain.
     pub const fn as_str(self) -> &'static str {
@@ -67,6 +96,10 @@ impl ConfigSyncDomain {
             Self::Prompts => "prompts",
             Self::Approvals => "approvals",
             Self::Profiles => "profiles",
+            Self::Skills => "skills",
+            Self::SkillUsage => "skill_usage",
+            Self::Memory => "memory",
+            Self::CliHome => "cli_home",
         }
     }
 
@@ -78,6 +111,10 @@ impl ConfigSyncDomain {
             "prompts" => Some(Self::Prompts),
             "approvals" => Some(Self::Approvals),
             "profiles" => Some(Self::Profiles),
+            "skills" => Some(Self::Skills),
+            "skill_usage" => Some(Self::SkillUsage),
+            "memory" => Some(Self::Memory),
+            "cli_home" => Some(Self::CliHome),
             _ => None,
         }
     }
@@ -122,6 +159,26 @@ pub struct ConfigSyncExportRequest {
     /// Domains to export. Empty means all supported domains on this backend.
     #[serde(default)]
     pub domains: Vec<ConfigSyncDomain>,
+    /// Itemized domains: answer with item keys and hashes only.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub index_only: bool,
+    /// Itemized domains: what the other side already holds (item key to
+    /// hash). A matching item is exported without its content.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub have: BTreeMap<String, String>,
+    /// Itemized domains: continue after this item key (the last page's
+    /// [`ItemizedDomainPayload::next`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
+    /// Itemized domains: `have` is complete only up to this item key, so
+    /// the page stops there (its `next` is then this key).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
+    /// Itemized two-way domains: the installation the page is for, so each
+    /// item can say what the sender last agreed on with it
+    /// ([`ConfigSyncItem::base`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer: Option<String>,
 }
 
 /// Portable `config.toml` sections (paths normalized with `$HOME`/`$ZLO_HOME`).
@@ -216,6 +273,65 @@ pub struct ProfilesDomainPayload {
     pub items: Vec<ProfileSyncItem>,
 }
 
+/// One file of an item: a skill bundle's file, or a memory document's text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigSyncItemFile {
+    /// Path inside the item (`SKILL.md`, `scripts/run.sh`); empty for an
+    /// item that is one document. For `cli_home`, whose items are single
+    /// host files, it is the file's mode note: empty, or `executable`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub path: String,
+    /// Standard base64 of the file's bytes.
+    pub data_b64: String,
+}
+
+/// One item of an itemized domain: a skill (key: its name) or a memory
+/// document (key: its path).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigSyncItem {
+    pub key: String,
+    /// Content digest; equal on two computers exactly when the item is.
+    pub hash: String,
+    /// `None`: the receiver already holds this content (or only an index
+    /// was asked for).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files: Option<Vec<ConfigSyncItemFile>>,
+    /// Two-way domains: the hash the sender last agreed on with the
+    /// receiver for this item. A receiver still holding exactly that knows
+    /// the sender's content came from its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+}
+
+/// A page of an itemized domain (`skills`, `memory`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ItemizedDomainPayload {
+    /// The whole domain's digest when this page was made.
+    pub hash: String,
+    #[serde(default)]
+    pub items: Vec<ConfigSyncItem>,
+    /// More items follow: export again with `after` set to this key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next: Option<String>,
+    /// Items that could not be carried, each with why ("key (too large,
+    /// 3000 KiB)", "key (changed while syncing)"). They stay where they
+    /// are; the receiver reports them and the pass counts as unfinished.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub not_carried: Vec<String>,
+}
+
+/// Payload for the `skill_usage` domain: the usage document's pins and
+/// per-source ledgers, opaque here (its owner validates it).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SkillUsageDomainPayload {
+    pub hash: String,
+    pub document: serde_json::Value,
+}
+
 /// Tagged per-domain payload carried inside [`ConfigSnapshotV1`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -225,6 +341,10 @@ pub enum ConfigSyncDomainPayload {
     Prompts(PromptsDomainPayload),
     Approvals(ApprovalsDomainPayload),
     Profiles(ProfilesDomainPayload),
+    Skills(ItemizedDomainPayload),
+    SkillUsage(SkillUsageDomainPayload),
+    Memory(ItemizedDomainPayload),
+    CliHome(ItemizedDomainPayload),
 }
 
 impl ConfigSyncDomainPayload {
@@ -236,6 +356,10 @@ impl ConfigSyncDomainPayload {
             Self::Prompts(_) => ConfigSyncDomain::Prompts,
             Self::Approvals(_) => ConfigSyncDomain::Approvals,
             Self::Profiles(_) => ConfigSyncDomain::Profiles,
+            Self::Skills(_) => ConfigSyncDomain::Skills,
+            Self::SkillUsage(_) => ConfigSyncDomain::SkillUsage,
+            Self::Memory(_) => ConfigSyncDomain::Memory,
+            Self::CliHome(_) => ConfigSyncDomain::CliHome,
         }
     }
 
@@ -247,6 +371,8 @@ impl ConfigSyncDomainPayload {
             Self::Prompts(p) => &p.hash,
             Self::Approvals(p) => &p.hash,
             Self::Profiles(p) => &p.hash,
+            Self::Skills(p) | Self::Memory(p) | Self::CliHome(p) => &p.hash,
+            Self::SkillUsage(p) => &p.hash,
         }
     }
 }
@@ -272,6 +398,11 @@ pub struct ConfigSyncApplyRequest {
     /// or omitted, every domain present in `snapshot.domains` is applied.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub domains: Vec<ConfigSyncDomain>,
+    /// The return leg of a two-way domain: only what merges is taken (uses,
+    /// documents the receiver did not change); nothing the receiver owns is
+    /// replaced.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub merge_back: bool,
 }
 
 /// Per-domain outcome status in [`ConfigSyncApplyReport`].

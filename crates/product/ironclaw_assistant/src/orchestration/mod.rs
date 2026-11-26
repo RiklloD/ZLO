@@ -95,8 +95,8 @@ pub fn orchestrate(
         OrchestratedProductSurface::new(inner, Arc::clone(engine), cli_bridge)
             .with_workspace_folders(workspace)
             .with_triage_sessions(triage_sessions)
-            .with_inbox_hints(inbox_hints),
+            .with_inbox_hints(Arc::clone(&inbox_hints)),
     );
-    inbox::title_on_completion(engine, &surface);
+    inbox::title_on_completion(engine, &surface, Some(inbox_hints));
     surface
 }

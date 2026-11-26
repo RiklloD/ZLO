@@ -76,6 +76,12 @@ pub fn extract_portable_sections(
 ) -> Result<PortableConfigSections, RebornConfigFileError> {
     let mut table = to_table(file)?;
     table.retain(|section, _| !is_machine_local(section));
+    // A sign-in written into an address (`https://user:pass@host`) never
+    // leaves this machine; the receiver sees that one was there and keeps
+    // its own section.
+    for (_, value) in table.iter_mut() {
+        redact_url_credentials(value);
+    }
     Ok(PortableConfigSections(table))
 }
 
@@ -94,7 +100,7 @@ pub fn merge_portable_sections(
         Some(file) => to_table(file)?,
         None => toml::Table::new(),
     };
-    let own_embeddings = merged.get(EMBEDDINGS_SECTION).cloned();
+    let own = merged.clone();
     merged.retain(|section, _| is_machine_local(section));
     let mut warnings = Vec::new();
     for (section, value) in &incoming.0 {
@@ -109,10 +115,17 @@ pub fn merge_portable_sections(
                 .get("base_url")
                 .and_then(toml::Value::as_str)
                 .is_some_and(is_loopback_base_url);
-        if loopback {
-            warnings.push("skipped [embeddings]: loopback base_url is machine-local".to_string());
-            if let Some(own) = own_embeddings.clone() {
-                merged.insert(section.clone(), own);
+        let reason = if loopback {
+            Some("loopback base_url is machine-local")
+        } else if carries_url_credentials(value) {
+            Some("an address in it carries a sign-in; set it on this computer")
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            warnings.push(format!("skipped [{section}]: {reason}"));
+            if let Some(own) = own.get(section) {
+                merged.insert(section.clone(), own.clone());
             }
             continue;
         }
@@ -184,6 +197,77 @@ pub fn apply_portable_config_file(
 }
 
 /// Whether `raw_url` targets a loopback host (`localhost`, `127.x.x.x`, `::1`).
+/// What stands in for a sign-in removed from an address.
+const REDACTED_USERINFO: &str = "redacted";
+
+/// The `user[:password]` part of an address, when it has one. `raw` has
+/// no whitespace or control characters (see [`as_a_client_reads`]).
+///
+/// Read as a browser or an HTTP client would: after the scheme any run of
+/// slashes or backslashes leads to the authority (`https:/u:p@host`,
+/// `https:///u:p@host` and `https:\\u:p@host` all sign in to `host`), a web
+/// scheme needs no slash at all (`https:u:p@host`), and the authority ends
+/// at the next slash, backslash, `?` or `#`.
+fn url_userinfo(raw: &str) -> Option<std::ops::Range<usize>> {
+    let (scheme, rest) = raw.split_once(':')?;
+    let colon = scheme.len();
+    let is_scheme = scheme
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic())
+        && scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+    let web = ["http", "https", "ws", "wss", "ftp"]
+        .iter()
+        .any(|known| scheme.eq_ignore_ascii_case(known));
+    let slashes = rest.len() - rest.trim_start_matches(['/', '\\']).len();
+    if !is_scheme || (slashes == 0 && !web) {
+        return None;
+    }
+    let start = colon + 1 + slashes;
+    let authority = rest.get(slashes..)?;
+    let authority_len = authority
+        .find(['/', '\\', '?', '#'])
+        .unwrap_or(authority.len());
+    let at = authority.get(..authority_len)?.rfind('@')?;
+    Some(start..start + at)
+}
+
+/// `text` as a client reads an address: whitespace and control characters
+/// anywhere in it are dropped before it is parsed.
+fn as_a_client_reads(text: &str) -> String {
+    text.chars()
+        .filter(|c| !c.is_whitespace() && !c.is_control())
+        .collect()
+}
+
+fn redact_url_credentials(value: &mut toml::Value) {
+    match value {
+        toml::Value::String(text) => {
+            let mut read = as_a_client_reads(text);
+            if let Some(userinfo) = url_userinfo(&read) {
+                read.replace_range(userinfo, REDACTED_USERINFO);
+                *text = read;
+            }
+        }
+        toml::Value::Array(items) => items.iter_mut().for_each(redact_url_credentials),
+        toml::Value::Table(table) => table
+            .iter_mut()
+            .for_each(|(_, value)| redact_url_credentials(value)),
+        _ => {}
+    }
+}
+
+fn carries_url_credentials(value: &toml::Value) -> bool {
+    match value {
+        toml::Value::String(text) => url_userinfo(&as_a_client_reads(text)).is_some(),
+        toml::Value::Array(items) => items.iter().any(carries_url_credentials),
+        toml::Value::Table(table) => table.values().any(carries_url_credentials),
+        _ => false,
+    }
+}
+
 pub fn is_loopback_base_url(raw_url: &str) -> bool {
     let trimmed = raw_url.trim();
     let after_scheme = match trimmed.find("://") {
@@ -344,6 +428,58 @@ worker_count = 4
         assert!(merged.embeddings.is_none());
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("embeddings"));
+    }
+
+    #[test]
+    fn a_sign_in_inside_an_address_never_leaves_and_the_receiver_keeps_its_own() {
+        let source = RebornConfigFile::parse_text(
+            "[embeddings]\nprovider = \"openai\"\nmodel = \"m\"\ndimension = 8\nbase_url = \"https://alice:hunter2@embed.example.com/v1\"\n",
+            Path::new("config.toml"),
+        )
+        .expect("source");
+        let exported = extract_portable_sections(&source).expect("extract");
+        let text = toml::to_string(&exported).expect("toml");
+        assert!(
+            !text.contains("hunter2") && !text.contains("alice"),
+            "{text}"
+        );
+        assert!(
+            text.contains("https://redacted@embed.example.com/v1"),
+            "{text}"
+        );
+
+        let target = RebornConfigFile::parse_text(
+            "[embeddings]\nprovider = \"openai\"\nmodel = \"own\"\ndimension = 8\nbase_url = \"https://embed.internal/v1\"\n",
+            Path::new("config.toml"),
+        )
+        .expect("target");
+        let (merged, warnings) = merge_portable_sections(Some(&target), &exported).expect("merge");
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("[embeddings]"), "{warnings:?}");
+        let kept = toml::to_string(&merged).expect("toml");
+        assert!(kept.contains("https://embed.internal/v1"), "{kept}");
+        assert!(!kept.contains("redacted"), "{kept}");
+
+        for odd in [
+            "https:///alice:hunter2@embed.example.com/v1",
+            "https:/alice:hunter2@embed.example.com/v1",
+            "https:\\\\alice:hunter2@embed.example.com/v1",
+            "HTTPS://alice:hunter2@embed.example.com",
+            " https://alice:hunter2@embed.example.com/v1",
+            "\thttps://alice:hunter2@embed.example.com/v1",
+            "ht\ntps://alice:hunter2@embed.example.com/v1",
+            "https:alice:hunter2@embed.example.com/v1",
+        ] {
+            let mut value = toml::Value::String(odd.to_string());
+            redact_url_credentials(&mut value);
+            let shown = value.as_str().unwrap_or_default().to_string();
+            assert!(!shown.contains("hunter2"), "{odd} -> {shown}");
+            assert!(carries_url_credentials(&value), "{odd}");
+        }
+        assert_eq!(url_userinfo("https://host/path@x"), None);
+        assert_eq!(url_userinfo("mailto:someone@example.com"), None);
+        assert_eq!(url_userinfo("note: write to a@b.c"), None);
+        assert_eq!(url_userinfo("plain text with @ sign"), None);
     }
 
     #[test]

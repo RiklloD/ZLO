@@ -69,6 +69,7 @@ pub use install_metadata::{
     INSTALL_METADATA_FILE_NAME, InstalledSkillMetadata, InstalledSkillMetadataSource,
     MAX_INSTALL_METADATA_BYTES,
 };
+pub use management::ReplacedBundleKeeper;
 pub use management::{
     MAX_INSTALL_BUNDLE_FILE_BYTES, MAX_INSTALL_BUNDLE_FILES, MAX_INSTALL_BUNDLE_TOTAL_BYTES,
     SKILL_FILE_NAME, SkillContentRequest, SkillContentResult, SkillInstallFile,
