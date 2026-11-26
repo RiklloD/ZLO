@@ -24,11 +24,52 @@ const DOMAIN: ConfigSyncDomain = ConfigSyncDomain::Skills;
 
 pub struct SkillsDomainHandler {
     skills: Arc<ScopedSkillManagementPort>,
+    /// Where a skill's bundle is copied before a pass replaces it.
+    notes: Arc<dyn super::notes::SyncNotes>,
 }
 
 impl SkillsDomainHandler {
-    pub fn new(skills: Arc<ScopedSkillManagementPort>) -> Self {
-        Self { skills }
+    pub fn new(
+        skills: Arc<ScopedSkillManagementPort>,
+        notes: Arc<dyn super::notes::SyncNotes>,
+    ) -> Self {
+        Self { skills, notes }
+    }
+
+    /// Keep this computer's bundle of `name` before it is replaced: the
+    /// source's bundle takes its place whole, files only this one had
+    /// included. Create-only, named by the bundle's own digest, so the
+    /// same bundle is kept once. `Err`: no copy, and no replacement.
+    async fn keep(
+        &self,
+        ctx: &ConfigSyncContext,
+        scope: &ResourceScope,
+        name: &str,
+        digest: &str,
+    ) -> Result<(), String> {
+        let files = self
+            .skills
+            .export_bundle_for_scope(scope.clone(), name)
+            .await
+            .map_err(|error| error.to_string())?;
+        let short: String = digest
+            .trim_start_matches("sha256:")
+            .chars()
+            .take(16)
+            .collect();
+        let copy = serde_json::to_vec(&items::encode(files)).map_err(|error| error.to_string())?;
+        let path = [
+            "skill-backups",
+            ctx.caller.tenant_id.as_str(),
+            ctx.caller.user_id.as_str(),
+            name,
+            short.as_str(),
+        ];
+        self.notes
+            .create(&path, &copy)
+            .await
+            .map(|_| ())
+            .map_err(|error| error.to_string())
     }
 
     /// The person's skills here: name to bundle digest, and the skills
@@ -105,9 +146,9 @@ impl ConfigSyncDomainHandler for SkillsDomainHandler {
         &self,
         ctx: &ConfigSyncContext,
     ) -> Result<ConfigSyncDomainDigest, ConfigSyncError> {
-        let (index, _) = self.index(&caller_skill_scope(ctx.caller.clone())).await?;
+        let (index, held_back) = self.index(&caller_skill_scope(ctx.caller.clone())).await?;
         Ok(ConfigSyncDomainDigest {
-            hash: items::domain_hash(&index),
+            hash: items::domain_hash_with_notes(&index, &held_back),
             updated_at: None,
             item_count: index.len() as u64,
         })
@@ -195,6 +236,16 @@ impl ConfigSyncDomainHandler for SkillsDomainHandler {
             if kept_here.iter().any(|note| note.starts_with(&prefix)) {
                 warnings.push(format!(
                     "skill {} was not synced: the one here holds a key or a secret",
+                    item.key
+                ));
+                skipped += 1;
+                continue;
+            }
+            if let Some(digest) = held.get(&item.key)
+                && let Err(why) = self.keep(ctx, &scope, &item.key, digest).await
+            {
+                warnings.push(format!(
+                    "skill {} was not synced: the one here could not be kept first ({why})",
                     item.key
                 ));
                 skipped += 1;

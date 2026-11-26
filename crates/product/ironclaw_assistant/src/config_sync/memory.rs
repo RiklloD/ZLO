@@ -72,6 +72,15 @@ pub struct BaseChange {
 /// (`archive/<when>/<path>`). It is evidence of a removal on this computer
 /// and is not itself carried (the provider does not take writes there).
 const ARCHIVE_ROOT: &str = "archive/";
+/// The provider's own record of each conversation (`threads/<thread>/…`):
+/// written by the provider only, about runs that happened on that
+/// computer, and refused as a document write.
+const THREADS_ROOT: &str = "threads/";
+
+/// A path that belongs to one computer and is not carried.
+fn local_only(path: &str) -> bool {
+    path.starts_with(ARCHIVE_ROOT) || path.starts_with(THREADS_ROOT)
+}
 
 /// One document here: its content digest (the item hash) and the
 /// provider's own token for that content, which a conditional write names.
@@ -83,11 +92,11 @@ struct Held {
 
 type Index = BTreeMap<String, Held>;
 
-/// What travels: every document outside the archive tree, by digest.
+/// What travels: every document that is not one computer's own, by digest.
 fn hashes(index: &Index) -> BTreeMap<String, String> {
     index
         .iter()
-        .filter(|(path, _)| !path.starts_with(ARCHIVE_ROOT))
+        .filter(|(path, _)| !local_only(path))
         .map(|(path, held)| (path.clone(), held.hash.clone()))
         .collect()
 }
@@ -454,8 +463,9 @@ impl ConfigSyncDomainHandler for MemoryDomainHandler {
 
         for item in &page.items {
             let path = item.key.as_str();
-            // The archive tree is each computer's own.
-            if path.starts_with(ARCHIVE_ROOT) {
+            // The archive tree and the conversation records are each
+            // computer's own.
+            if local_only(path) {
                 skipped += 1;
                 continue;
             }

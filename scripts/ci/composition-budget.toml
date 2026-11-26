@@ -512,7 +512,12 @@ observed_date = "2026-11-17"
 # Unix only, hence two `#[cfg(unix)]` lines) in
 # `config_sync_assembly.rs`; the handler and its root list live in
 # `ironclaw_assistant::config_sync::cli_home` and `ironclaw_cli_providers`.
-loc_ceiling = 34721
+# ✎ 2026-11-26 (config sync, records store): 34721 -> 34728, observed
+# 34871 -> 34878, zero hidden headroom: `config_sync_assembly.rs` builds
+# one `SettingsNotes` and hands it to the approvals and skills handlers
+# (what sync made and what it replaced on this host). The store is
+# `ironclaw_assistant::config_sync::notes`.
+loc_ceiling = 34728
 # Working slack for in-flight PRs. Deliberately small: the inflow this gate
 # exists to catch was +619 lines, and a tolerance that would have absorbed it
 # is a gate that constrains nothing. A change adding more than this to

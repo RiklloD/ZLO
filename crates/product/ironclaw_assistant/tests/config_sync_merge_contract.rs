@@ -11,9 +11,11 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use ironclaw_assistant::config_sync::ConfigSyncService;
+use ironclaw_assistant::config_sync::approvals::ApprovalsDomainHandler;
 use ironclaw_assistant::config_sync::memory::{
     BaseChange, MemoryDomainHandler, MemorySyncBaseStore,
 };
+use ironclaw_assistant::config_sync::notes::{SettingsNotes, SyncNotes};
 use ironclaw_assistant::config_sync::skill_usage::SkillUsageDomainHandler;
 use ironclaw_assistant::config_sync::skills::SkillsDomainHandler;
 use ironclaw_assistant::config_sync::{ConfigSyncError, items};
@@ -272,6 +274,7 @@ struct Host {
     documents: Arc<Documents>,
     usage: Arc<Usage>,
     skills: Arc<ScopedSkillManagementPort>,
+    notes: Arc<dyn SyncNotes>,
     service: ConfigSyncService,
 }
 
@@ -282,6 +285,7 @@ fn host(id: &'static str) -> Host {
         UserId::new("alice").expect("user"),
         Arc::new(InMemoryBackend::new()),
     );
+    let notes: Arc<dyn SyncNotes> = Arc::new(SettingsNotes::new(Arc::new(InMemoryBackend::new())));
     let service = ConfigSyncService::new(Arc::new(Identity(id)), "/data", "/home/alice")
         .with_handler(Arc::new(
             MemoryDomainHandler::new(
@@ -293,12 +297,16 @@ fn host(id: &'static str) -> Host {
         .with_handler(Arc::new(SkillUsageDomainHandler::new(
             SharedSkillUsage::new(usage.clone()),
         )))
-        .with_handler(Arc::new(SkillsDomainHandler::new(skills.clone())));
+        .with_handler(Arc::new(SkillsDomainHandler::new(
+            skills.clone(),
+            notes.clone(),
+        )));
     Host {
         id,
         documents,
         usage,
         skills,
+        notes,
         service,
     }
 }
@@ -852,6 +860,13 @@ async fn a_replaced_skill_loses_its_stale_files_and_keeps_loading() {
         .replace_bundle_for_scope(scope(), "deploy", files("new"))
         .await
         .expect("mac bundle");
+    let before = items::files_hash(
+        &boxed
+            .skills
+            .export_bundle_for_scope(scope(), "deploy")
+            .await
+            .expect("bundle"),
+    );
     assert!(
         sync(&mac, &boxed, ConfigSyncDomain::Skills)
             .await
@@ -867,6 +882,23 @@ async fn a_replaced_skill_loses_its_stale_files_and_keeps_loading() {
         .collect();
     names.sort();
     assert_eq!(names, ["SKILL.md", "scripts/new.sh"]);
+    // The box's own bundle, with the file only it had, was kept first.
+    let short: String = before
+        .trim_start_matches("sha256:")
+        .chars()
+        .take(16)
+        .collect();
+    let copy = boxed
+        .notes
+        .read(&["skill-backups", "tenant-a", "alice", "deploy", &short])
+        .await
+        .expect("read")
+        .expect("a copy of the replaced bundle");
+    let copy: Vec<serde_json::Value> = serde_json::from_slice(&copy).expect("json");
+    assert!(
+        copy.iter().any(|file| file["path"] == "scripts/old.sh"),
+        "{copy:?}"
+    );
     // A bundle with a path that leaves the skill is refused before anything
     // of the skill in place is touched.
     let bad = vec![
@@ -986,7 +1018,7 @@ async fn a_document_archived_after_it_was_agreed_stays_archived_when_the_other_s
 #[tokio::test]
 async fn a_skill_that_holds_a_key_is_carried_neither_out_nor_over() {
     let (mac, boxed) = (host(MAC), host(BOX));
-    let key = b"-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n".to_vec();
+    let key = b"-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7\n-----END PRIVATE KEY-----\n".to_vec();
     let bundle_of = |name: &str, extra: (&str, Vec<u8>)| {
         let manifest = format!("---\nname: {name}\ndescription: test\n---\n# {name}\n");
         vec![
@@ -1070,4 +1102,155 @@ async fn a_skill_that_holds_a_key_is_carried_neither_out_nor_over() {
         .await
         .expect("bundle");
     assert!(after.iter().any(|(_, bytes)| *bytes == key), "untouched");
+}
+
+#[tokio::test]
+async fn conversation_records_are_each_computers_own() {
+    let (mac, boxed) = (host(MAC), host(BOX));
+    mac.documents
+        .set("threads/t1/run-1.md", "user: hi\nassistant: hello\n");
+    mac.documents.set("MEMORY.md", "kept\n");
+    assert!(sync(&mac, &boxed, MEMORY).await.is_empty());
+    assert_eq!(boxed.documents.paths(), ["MEMORY.md"]);
+    assert_eq!(hash(&mac, MEMORY).await, hash(&boxed, MEMORY).await);
+}
+
+struct NoTools;
+
+#[async_trait]
+impl ironclaw_product_contracts::operator_tools::RebornOperatorToolCatalog for NoTools {
+    async fn list_operator_tools(
+        &self,
+        _: &UserId,
+    ) -> Vec<ironclaw_product_contracts::operator_tools::RebornOperatorToolInfo> {
+        Vec::new()
+    }
+}
+
+#[tokio::test]
+async fn a_restriction_the_mac_resets_is_taken_back_and_the_boxs_own_are_kept() {
+    use ironclaw_approvals::test_support::{
+        in_memory_backed_auto_approve_setting_store,
+        in_memory_backed_capability_permission_override_store,
+        in_memory_backed_persistent_approval_policy_store,
+    };
+    use ironclaw_approvals::{
+        CapabilityPermissionOverride, CapabilityPermissionOverrideInput,
+        CapabilityPermissionOverrideKey, CapabilityPermissionOverrideStorePort,
+    };
+    use ironclaw_host_api::ids::CapabilityId;
+    use ironclaw_host_api::scope::Principal;
+
+    const APPROVALS: ConfigSyncDomain = ConfigSyncDomain::Approvals;
+    struct Side {
+        overrides: Arc<dyn CapabilityPermissionOverrideStorePort>,
+        service: ConfigSyncService,
+    }
+    let side = |id: &'static str| {
+        let overrides: Arc<dyn CapabilityPermissionOverrideStorePort> =
+            Arc::new(in_memory_backed_capability_permission_override_store());
+        let notes: Arc<dyn SyncNotes> =
+            Arc::new(SettingsNotes::new(Arc::new(InMemoryBackend::new())));
+        let service = ConfigSyncService::new(Arc::new(Identity(id)), "/data", "/home/alice")
+            .with_handler(Arc::new(ApprovalsDomainHandler::new(
+                Arc::new(in_memory_backed_auto_approve_setting_store()),
+                overrides.clone(),
+                Arc::new(in_memory_backed_persistent_approval_policy_store()),
+                Arc::new(NoTools),
+                notes,
+            )));
+        Side { overrides, service }
+    };
+    let (mac, boxed) = (side(MAC), side(BOX));
+    let set = |side: &Side, raw: &str, state: Option<CapabilityPermissionOverride>| {
+        let overrides = side.overrides.clone();
+        let capability_id = CapabilityId::new(raw).expect("capability");
+        async move {
+            match state {
+                Some(state) => {
+                    overrides
+                        .set(CapabilityPermissionOverrideInput {
+                            scope: scope(),
+                            capability_id,
+                            state,
+                            updated_by: Principal::User(UserId::new("alice").expect("user")),
+                        })
+                        .await
+                        .expect("set");
+                }
+                None => {
+                    overrides
+                        .clear(&CapabilityPermissionOverrideKey::new(
+                            &scope(),
+                            capability_id,
+                        ))
+                        .await
+                        .expect("clear");
+                }
+            }
+        }
+    };
+    let held = |side: &Side| {
+        let overrides = side.overrides.clone();
+        async move {
+            let mut out: Vec<String> = overrides
+                .list_for_scope(&scope())
+                .await
+                .expect("list")
+                .into_iter()
+                .map(|record| record.key.capability_id.as_str().to_string())
+                .collect();
+            out.sort();
+            out
+        }
+    };
+    let pass = || async {
+        let snapshot = mac
+            .service
+            .export(
+                caller(),
+                ConfigSyncExportRequest {
+                    domains: vec![APPROVALS],
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("export");
+        boxed
+            .service
+            .apply(
+                caller(),
+                ConfigSyncApplyRequest {
+                    snapshot,
+                    domains: Vec::new(),
+                    merge_back: false,
+                },
+            )
+            .await
+            .expect("apply");
+    };
+
+    let off = Some(CapabilityPermissionOverride::Disabled);
+    set(&mac, "demo.shared", off).await;
+    set(&mac, "demo.edited", off).await;
+    set(&boxed, "demo.box_only", off).await;
+    pass().await;
+    assert_eq!(
+        held(&boxed).await,
+        ["demo.box_only", "demo.edited", "demo.shared"]
+    );
+
+    // The box changes one that sync made; the Mac then resets both of its.
+    set(
+        &boxed,
+        "demo.edited",
+        Some(CapabilityPermissionOverride::AskEachTime),
+    )
+    .await;
+    set(&mac, "demo.shared", None).await;
+    set(&mac, "demo.edited", None).await;
+    pass().await;
+    // Taken back: the one still as sync made it. Kept: the box's own, and
+    // the one the box has changed since.
+    assert_eq!(held(&boxed).await, ["demo.box_only", "demo.edited"]);
 }

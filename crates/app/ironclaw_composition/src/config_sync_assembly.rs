@@ -10,6 +10,7 @@ use ironclaw_assistant::config_sync::cli_home::CliHomeDomainHandler;
 use ironclaw_assistant::config_sync::config::ConfigDomainHandler;
 use ironclaw_assistant::config_sync::memory::MemoryDomainHandler;
 use ironclaw_assistant::config_sync::memory_base::SettingsMemorySyncBase;
+use ironclaw_assistant::config_sync::notes::SettingsNotes;
 use ironclaw_assistant::config_sync::orchestrator_settings::OrchestratorSettingsDomainHandler;
 use ironclaw_assistant::config_sync::profiles::ProfilesDomainHandler;
 use ironclaw_assistant::config_sync::prompts::PromptsDomainHandler;
@@ -32,6 +33,10 @@ pub(crate) fn wrap(
     };
     let home = boot.home();
     let user_home = std::env::var("HOME").unwrap_or_default(); // silent-ok: no HOME rewrites no home paths
+    // Where sync keeps what it made and what it replaced on this host.
+    let notes = Arc::new(SettingsNotes::new(Arc::clone(
+        &runtime.extension_filesystem,
+    )));
     let mut service = ConfigSyncService::new(
         Arc::new(runtime.environment_access_store()),
         home.path().display().to_string(),
@@ -47,10 +52,12 @@ pub(crate) fn wrap(
             Vec::new(),
             Some(runtime.extension_management.clone()),
         )),
+        notes.clone(),
     )))
-    .with_handler(Arc::new(SkillsDomainHandler::new(Arc::clone(
-        &runtime.skill_management,
-    ))))
+    .with_handler(Arc::new(SkillsDomainHandler::new(
+        Arc::clone(&runtime.skill_management),
+        notes,
+    )))
     .with_handler(Arc::new(SkillUsageDomainHandler::new(
         runtime.skill_usage.clone(),
     )));

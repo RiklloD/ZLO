@@ -644,5 +644,26 @@ Phases 1, 2 and 5 are in. What differs from the sketch above:
     `notes/a` on one side and `notes/a/b.md` on the other never settle
     and are reported at every pass.
 
+- **After the sixth review (2026-11-26; verdict "ship after fixes").**
+  - Sync keeps small records of its own under
+    `/system/settings/config-sync/` (`config_sync::notes`).
+  - Before a skill bundle is replaced, the receiver's bundle is copied
+    there (`skill-backups/<tenant>/<user>/<skill>/<digest>`, create-only),
+    so files only it had and edits made on it survive. Before a rules
+    file is replaced, its bytes are kept in the root's hidden
+    `.zlo-sync-backups/` folder. No copy, no replacement.
+  - Approvals: the overrides and grants a pass makes are recorded per
+    source computer. One the source later resets is taken back when it is
+    still as that pass left it; what the receiver set for itself, or
+    changed since, is kept.
+  - Memory: `threads/` (the provider's per-conversation records) is each
+    computer's own, like `archive/`.
+  - Secrets: an environment file (`.env`, not `.env.example`) is a key
+    file. A field name alone is not a secret: it must be followed by a
+    real-looking value (`"access_token": "<token>"` in a document is
+    ordinary). A key block needs a body.
+  - What a side held back is part of its digest, so a pass is made that
+    says it even when everything that can be carried already matches.
+
 Left: phase 3 (provider catalog and keys), phase 4 (extensions, hooks,
 automations).

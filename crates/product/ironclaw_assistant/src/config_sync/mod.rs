@@ -25,6 +25,7 @@ pub mod config;
 pub mod items;
 pub mod memory;
 pub mod memory_base;
+pub mod notes;
 pub mod orchestrator_settings;
 pub mod profiles;
 pub mod prompts;

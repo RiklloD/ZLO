@@ -278,6 +278,47 @@ fn held_exactly(dir: &OwnedFd, name: &str) -> io::Result<bool> {
     Ok(found)
 }
 
+/// The hidden folder in a root where a file's bytes are kept before a pass
+/// replaces it. Hidden names are never listed, so copies are never carried.
+const BACKUPS: &str = ".zlo-sync-backups";
+
+/// Keep `held`, the file at `names` below the root, in the root's backup
+/// folder: one copy per content, named by the path and the content's
+/// digest, written only where nothing is.
+fn keep_copy(top: &OwnedFd, names: &[&str], held: &[u8]) -> io::Result<()> {
+    let folder = match rustix::fs::openat(top.as_fd(), BACKUPS, DIR_FLAGS, Mode::empty()) {
+        Ok(folder) => folder,
+        Err(rustix::io::Errno::NOENT) => {
+            rustix::fs::mkdirat(top.as_fd(), BACKUPS, Mode::RWXU).map_err(rx)?;
+            rustix::fs::openat(top.as_fd(), BACKUPS, DIR_FLAGS, Mode::empty()).map_err(rx)?
+        }
+        Err(error) => return Err(rx(error)),
+    };
+    let digest = items::sha256(held);
+    let short: String = digest
+        .trim_start_matches("sha256:")
+        .chars()
+        .take(16)
+        .collect();
+    let path: String = names.join("__").chars().take(150).collect();
+    let name = format!("{path}.{short}");
+    match rustix::fs::openat(
+        folder.as_fd(),
+        name.as_str(),
+        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::RUSR | Mode::WUSR,
+    ) {
+        Ok(fd) => {
+            let mut file = std::fs::File::from(fd);
+            file.write_all(held)?;
+            file.sync_all()
+        }
+        // The same content was kept before.
+        Err(rustix::io::Errno::EXIST) => Ok(()),
+        Err(error) => Err(rx(error)),
+    }
+}
+
 /// Run a walk of the disk off the async workers where the runtime allows.
 fn off_the_reactor<T>(work: impl FnOnce() -> T) -> T {
     match tokio::runtime::Handle::try_current() {
@@ -451,7 +492,8 @@ impl CliHomeDomainHandler {
         let Some((last, folders)) = names.split_last() else {
             return Err(io::Error::other("the file has no name"));
         };
-        let mut dir = open_root(&root.dir, true)?;
+        let top = open_root(&root.dir, true)?;
+        let mut dir = top.try_clone()?;
         for name in folders {
             dir = if held_exactly(&dir, name)? {
                 rustix::fs::openat(dir.as_fd(), *name, DIR_FLAGS, Mode::empty())
@@ -484,6 +526,11 @@ impl CliHomeDomainHandler {
                 return Err(io::Error::other(
                     "the file in its place holds a key or a sign-in and is kept",
                 ));
+            }
+            // This computer's text (an edit made here) is kept before the
+            // source's takes its place.
+            if held != bytes {
+                keep_copy(&top, names, &held)?;
             }
         }
         let temporary = format!(".zlo-sync-{}.tmp", Uuid::new_v4());
@@ -659,7 +706,7 @@ impl ConfigSyncDomainHandler for CliHomeDomainHandler {
     ) -> Result<ConfigSyncDomainDigest, ConfigSyncError> {
         let listing = self.list();
         Ok(ConfigSyncDomainDigest {
-            hash: items::domain_hash(&listing.files),
+            hash: items::domain_hash_with_notes(&listing.files, &listing.not_carried),
             updated_at: None,
             item_count: listing.files.len() as u64,
         })
@@ -885,7 +932,7 @@ mod tests {
         mac.put(".alpha/skills/deploy/cert.pfx", "bundle");
         mac.put(
             ".alpha/skills/deploy/notes.txt",
-            "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----\n",
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtz\n-----END OPENSSH PRIVATE KEY-----\n",
         );
         // Ordinary files whose names merely contain such a word travel.
         mac.put(".alpha/skills/deploy/tokenizer.md", "# Tokenizer\n");
@@ -912,6 +959,17 @@ mod tests {
         assert!(boxed.get(".alpha/skills/deploy/tokenizer.md").is_some());
         assert!(boxed.get(".alpha/skills/deploy/oauth.md").is_some());
         assert_eq!(boxed.get(".alpha/RULES.md").as_deref(), Some("Be brief.\n"));
+        // What the box had there (an edit of its own) is kept beside.
+        let kept: Vec<_> = std::fs::read_dir(boxed.path(".alpha/.zlo-sync-backups"))
+            .expect("backups")
+            .flatten()
+            .map(|entry| entry.path())
+            .collect();
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        assert_eq!(
+            std::fs::read_to_string(&kept[0]).expect("copy"),
+            "Old rules.\n"
+        );
         assert_eq!(
             boxed.get(".alpha/skills/deploy/SKILL.md").as_deref(),
             Some("# Deploy\n")
@@ -937,8 +995,21 @@ mod tests {
         let again = carry(&mac, &boxed).await;
         assert_eq!(again.outcome.applied_count, 0);
 
-        // Without a file of its own the two sides hash the same.
+        // The Mac still has something to say (files it held back), so the
+        // two differ until a pass has said it; with nothing held back and
+        // no file of its own, they hash the same.
         std::fs::remove_dir_all(boxed.path(".alpha/skills/box-only")).expect("remove");
+        assert_ne!(mac.hash().await, boxed.hash().await);
+        for held_back in [
+            "settings.json",
+            "api_token.txt",
+            "id_ed25519",
+            "cert.pfx",
+            "notes.txt",
+        ] {
+            std::fs::remove_file(mac.path(&format!(".alpha/skills/deploy/{held_back}")))
+                .expect("remove");
+        }
         assert_eq!(mac.hash().await, boxed.hash().await);
     }
 
@@ -1153,12 +1224,12 @@ mod tests {
     #[tokio::test]
     async fn a_key_the_receiver_keeps_under_an_ordinary_name_is_not_replaced() {
         let (mac, boxed) = (Host::new(), Host::new());
-        let key = "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----\n";
+        let key = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtz\n-----END OPENSSH PRIVATE KEY-----\n";
         boxed.put(".alpha/skills/deploy/notes.txt", key);
         mac.put(".alpha/skills/deploy/notes.txt", "ordinary notes\n");
         mac.put(
             ".alpha/skills/deploy/kube.yaml",
-            "users:\n- user:\n    client-key-data: AAAA\n",
+            "users:\n- user:\n    client-key-data: LS0tLS1CRUdJTiBSU0EgUFJJVkFURSBLRVktLS0tLQ==\n",
         );
         let result = carry(&mac, &boxed).await;
         assert_eq!(result.outcome.applied_count, 0, "{:?}", result.outcome);

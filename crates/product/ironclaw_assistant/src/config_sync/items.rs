@@ -38,8 +38,9 @@ pub struct PageRequest {
     pub peer: Option<String>,
 }
 
-/// A file name under which a key, a certificate bundle or a cluster
-/// sign-in is conventionally kept. Judged on the lowercased name.
+/// A file name under which a key, a certificate bundle, a cluster sign-in
+/// or a program's environment is conventionally kept. Judged on the
+/// lowercased name. A template (`.env.example`) is an ordinary file.
 pub fn key_file_name(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     let (stem, extensions) = lower.split_once('.').unwrap_or((lower.as_str(), ""));
@@ -51,32 +52,117 @@ pub fn key_file_name(name: &str) -> bool {
         "netrc",
         "npmrc",
     ];
-    const EXTENSIONS: [&str; 15] = [
+    const EXTENSIONS: [&str; 16] = [
         "pem", "key", "p12", "pfx", "jks", "keystore", "kdbx", "ppk", "gpg", "asc", "der", "p8",
-        "netrc", "npmrc", "pypirc",
+        "netrc", "npmrc", "pypirc", "env",
     ];
+    const TEMPLATES: [&str; 5] = ["example", "sample", "template", "dist", "md"];
+    if extensions
+        .rsplit('.')
+        .next()
+        .is_some_and(|last| TEMPLATES.contains(&last))
+    {
+        return false;
+    }
     STEMS.contains(&stem)
         || stem.starts_with("id_ed25519")
         || extensions.split('.').any(|ext| EXTENSIONS.contains(&ext))
 }
 
+/// The value written after a field name at `from`: past an optional
+/// closing quote, a `:` or `=`, and an optional opening quote, up to the
+/// next quote, whitespace or line end.
+fn value_after(bytes: &[u8], from: usize) -> &[u8] {
+    let rest = bytes.get(from..).unwrap_or_default();
+    let skip = |rest: &[u8], what: &[u8]| -> usize {
+        rest.iter().take_while(|b| what.contains(b)).count()
+    };
+    let mut at = skip(rest, b"\"' \t");
+    if !rest.get(at).is_some_and(|b| matches!(b, b':' | b'=')) {
+        return &[];
+    }
+    at += 1;
+    at += skip(&rest[at..], b" \t");
+    at += skip(&rest[at..], b"\"'");
+    let len = rest[at..]
+        .iter()
+        .take_while(|b| !matches!(b, b'"' | b'\'' | b' ' | b'\t' | b'\r' | b'\n' | b','))
+        .count();
+    &rest[at..at + len]
+}
+
+/// A value that is a real secret rather than a placeholder in an example:
+/// long, and made only of the characters keys and tokens are made of.
+fn looks_real(value: &[u8]) -> bool {
+    const PLACEHOLDERS: [&[u8]; 5] = [
+        b"your",
+        b"example",
+        b"placeholder",
+        b"redacted",
+        b"changeme",
+    ];
+    value.len() >= 20
+        && value
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-+/=:~".contains(b))
+        && !value
+            .windows(3)
+            .any(|w| w == b"..." || w.eq_ignore_ascii_case(b"xxx"))
+        && !PLACEHOLDERS.iter().any(|word| {
+            value
+                .windows(word.len())
+                .any(|w| w.eq_ignore_ascii_case(word))
+        })
+}
+
+/// Where each occurrence of `mark` in `bytes` ends.
+fn found<'a>(bytes: &'a [u8], mark: &'a [u8]) -> impl Iterator<Item = usize> + 'a {
+    bytes
+        .windows(mark.len())
+        .enumerate()
+        .filter(move |(_, window)| *window == mark)
+        .map(move |(at, _)| at + mark.len())
+}
+
 /// Bytes that hold a secret in one of the forms tools write them: a
-/// private key block, a cluster or cloud sign-in field, a stored token.
+/// private key block with a body, or a sign-in field (a cluster's, a
+/// cloud's, a stored token, a provider key in an environment file) with a
+/// real value. A document that only names such a field, or shows a
+/// placeholder, is an ordinary file.
 pub fn secret_bytes(bytes: &[u8]) -> bool {
-    const MARKS: [&[u8]; 9] = [
-        b"PRIVATE KEY-----",
+    const BLOCK: &[u8] = b"PRIVATE KEY-----";
+    const FIELDS: [&[u8]; 12] = [
         b"client-key-data",
         b"aws_secret_access_key",
-        b"\"access_token\"",
-        b"\"refresh_token\"",
-        b"\"accessToken\"",
-        b"\"refreshToken\"",
-        b"\"client_secret\"",
-        b"\"private_key\"",
+        b"access_token",
+        b"refresh_token",
+        b"accessToken",
+        b"refreshToken",
+        b"client_secret",
+        b"private_key",
+        b"API_KEY",
+        b"_TOKEN",
+        b"_SECRET",
+        b"api_key",
     ];
-    MARKS
-        .iter()
-        .any(|mark| bytes.windows(mark.len()).any(|window| window == *mark))
+    // A key block: the header, then at least a line of key material.
+    let block = found(bytes, BLOCK).any(|after| {
+        let body = bytes.get(after..).unwrap_or_default();
+        let lead = body
+            .iter()
+            .take_while(|b| b.is_ascii_whitespace() || **b == b'\\' || **b == b'n')
+            .count();
+        body.get(lead..)
+            .unwrap_or_default()
+            .iter()
+            .take_while(|b| b.is_ascii_alphanumeric() || b"+/=".contains(b))
+            .count()
+            >= 40
+    });
+    block
+        || FIELDS
+            .iter()
+            .any(|field| found(bytes, field).any(|after| looks_real(value_after(bytes, after))))
 }
 
 /// `sha256:<hex>` of bytes.
@@ -93,6 +179,22 @@ pub fn files_hash(files: &[(String, Vec<u8>)]) -> String {
         hasher.update(path.as_bytes());
         hasher.update([0]);
         hasher.update(Sha256::digest(bytes));
+    }
+    format!("sha256:{}", hex_lower(&hasher.finalize()))
+}
+
+/// [`domain_hash`] of a domain that also has something to say about what
+/// it left out. The notes are part of the digest, so the two sides differ
+/// while there is something to tell and a pass is made that tells it.
+pub fn domain_hash_with_notes(items: &BTreeMap<String, String>, notes: &[String]) -> String {
+    if notes.is_empty() {
+        return domain_hash(items);
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(domain_hash(items).as_bytes());
+    for note in notes {
+        hasher.update([0]);
+        hasher.update(note.as_bytes());
     }
     format!("sha256:{}", hex_lower(&hasher.finalize()))
 }
@@ -443,6 +545,42 @@ mod tests {
             .expect("page");
         assert!(page.items.is_empty());
         assert_eq!(page.next, None, "every key was dealt with");
+    }
+
+    #[test]
+    fn a_secret_is_a_field_with_a_real_value_not_the_mention_of_one() {
+        for secret in [
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtz\n",
+            "users:\n- user:\n    client-key-data: LS0tLS1CRUdJTiBSU0EgUFJJVkFURSBLRVktLS0tLQ==\n",
+            "{\"access_token\": \"ya29.a0AfH6SMBx7r3kQ9vT2uYp1LzWqE8\"}",
+            "OPENAI_API_KEY=sk-proj-9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c\n",
+            "export GITHUB_TOKEN='ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8'\n",
+            "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYzQ9v8u7t6s5r4\n",
+        ] {
+            assert!(secret_bytes(secret.as_bytes()), "{secret}");
+        }
+        for ordinary in [
+            "The response has an `access_token` and a `refresh_token`.",
+            "{\"access_token\": \"<token>\"}",
+            "{\"access_token\": \"YOUR_ACCESS_TOKEN_GOES_HERE_PLEASE\"}",
+            "OPENAI_API_KEY=your-key-here\n",
+            "OPENAI_API_KEY=\n",
+            "Paste the block that starts with -----BEGIN PRIVATE KEY----- into the field.",
+            "set API_KEY to the value from the dashboard",
+        ] {
+            assert!(!secret_bytes(ordinary.as_bytes()), "{ordinary}");
+        }
+        for (name, kept) in [
+            (".env", true),
+            ("prod.env", true),
+            (".env.example", false),
+            ("env.md", false),
+            ("deploy.pem", true),
+            ("id_ed25519", true),
+            ("environment.md", false),
+        ] {
+            assert_eq!(key_file_name(name), kept, "{name}");
+        }
     }
 
     #[test]
