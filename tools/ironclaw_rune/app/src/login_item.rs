@@ -83,18 +83,42 @@ const NOT_INSTALLED: &str = if cfg!(target_os = "macos") {
 /// The autostart entry running the installed app.
 #[cfg(not(target_os = "macos"))]
 fn login_file(exe: &Path) -> String {
-    // Desktop-entry Exec quoting: the path in double quotes, with `"`, `` ` ``,
-    // `$` and `\` escaped.
-    let mut quoted = String::new();
-    for c in exe.display().to_string().chars() {
-        if matches!(c, '"' | '`' | '$' | '\\') {
-            quoted.push('\\');
-        }
-        quoted.push(c);
-    }
     format!(
-        "[Desktop Entry]\nType=Application\nName=ZLO\nExec=\"{quoted}\"\nX-GNOME-Autostart-enabled=true\n"
+        "[Desktop Entry]\nType=Application\nName=ZLO\nExec={}\nX-GNOME-Autostart-enabled=true\n",
+        exec_value(&exe.display().to_string())
     )
+}
+
+/// `path` as a Desktop Entry `Exec` value running it, in the spec's two
+/// layers: a double-quoted argument (`"`, `` ` ``, `$` and `\` escaped with
+/// `\`, `%` doubled so it is no field code), then the string value's own
+/// escapes (`\` doubled, control characters as `\n`, `\t`, `\r`).
+/// `install-linux.sh` writes the same encoding.
+#[cfg(not(target_os = "macos"))]
+fn exec_value(path: &str) -> String {
+    let mut arg = String::from("\"");
+    for c in path.chars() {
+        match c {
+            '"' | '`' | '$' | '\\' => {
+                arg.push('\\');
+                arg.push(c);
+            }
+            '%' => arg.push_str("%%"),
+            _ => arg.push(c),
+        }
+    }
+    arg.push('"');
+    let mut value = String::new();
+    for c in arg.chars() {
+        match c {
+            '\\' => value.push_str("\\\\"),
+            '\n' => value.push_str("\\n"),
+            '\t' => value.push_str("\\t"),
+            '\r' => value.push_str("\\r"),
+            _ => value.push(c),
+        }
+    }
+    value
 }
 
 #[cfg(target_os = "macos")]
@@ -145,11 +169,24 @@ mod tests {
     #[cfg(not(target_os = "macos"))]
     #[test]
     fn autostart_runs_the_installed_app_and_quotes_its_path() {
-        let text = login_file(Path::new("/home/a b/.local/share/zlo/app/z\"lo"));
+        let text = login_file(Path::new("/home/a b/.local/share/zlo/app/zlo"));
         assert!(text.starts_with("[Desktop Entry]\n"), "{text}");
         assert!(
-            text.contains("Exec=\"/home/a b/.local/share/zlo/app/z\\\"lo\"\n"),
+            text.contains("Exec=\"/home/a b/.local/share/zlo/app/zlo\"\n"),
             "{text}"
+        );
+    }
+
+    /// The spec's two layers: `z"l$o%\` is quoted for the command line
+    /// (`\"`, `\$`, `%%`, `\\`), then every backslash doubled for the
+    /// string value.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn exec_values_escape_both_layers() {
+        assert_eq!(super::exec_value("/a b/zlo"), "\"/a b/zlo\"");
+        assert_eq!(
+            super::exec_value("/x/z\"l$o%\\"),
+            "\"/x/z\\\\\"l\\\\$o%%\\\\\\\\\""
         );
     }
 }

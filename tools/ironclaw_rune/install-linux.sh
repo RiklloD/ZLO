@@ -42,8 +42,18 @@ esac
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
 # The app is its own workspace; both follow CARGO_TARGET_DIR when it is set.
-app_target="${CARGO_TARGET_DIR:-$here/target}"
-backend_target="${CARGO_TARGET_DIR:-$repo/target}"
+# Cargo reads a relative one from each build's own folder, so it is made
+# absolute here (from where the script was started) and passed to both
+# builds explicitly.
+if [ -n "${CARGO_TARGET_DIR:-}" ]; then
+  mkdir -p "$CARGO_TARGET_DIR"
+  shared_target=$(cd "$CARGO_TARGET_DIR" && pwd)
+  app_target=$shared_target
+  backend_target=$shared_target
+else
+  app_target="$here/target"
+  backend_target="$repo/target"
+fi
 share="${XDG_DATA_HOME:-$HOME/.local/share}"
 if [ -n "$light" ]; then
   dest="$share/zlo/light"
@@ -58,13 +68,13 @@ fi
 mkdir -p "$dest"
 if [ -z "$light" ]; then
   echo "Building the backend…"
-  (cd "$repo" && SKIP_FRONTEND_BUILD=1 cargo build --release --locked -p ironclaw --bin zlo)
+  (cd "$repo" && SKIP_FRONTEND_BUILD=1 CARGO_TARGET_DIR="$backend_target" cargo build --release --locked -p ironclaw --bin zlo)
   # Staged at once: the app's binary is also named zlo, and under a shared
   # CARGO_TARGET_DIR its build would overwrite this one.
   install -m 0755 "$backend_target/release/zlo" "$dest/zlo-backend.new"
 fi
 echo "Building the app…"
-(cd "$here" && cargo build --release --locked -p ironclaw_rune)
+(cd "$here" && CARGO_TARGET_DIR="$app_target" cargo build --release --locked -p ironclaw_rune)
 
 # Replace, never write into a running binary.
 install -m 0755 "$app_target/release/zlo" "$dest/zlo.new" && mv -f "$dest/zlo.new" "$dest/zlo"
@@ -87,12 +97,16 @@ ln -sf "$dest/zlo" "$HOME/.local/bin/$entry-desktop"
 icons="$share/icons/hicolor/scalable/apps"
 mkdir -p "$icons" "$share/applications"
 cp "$here/app/assets/icon.svg" "$icons/$entry.svg"
+# The Exec value in the Desktop Entry spec's two layers (as login_item.rs
+# writes it): a double-quoted argument with " ` $ \ escaped and % doubled,
+# then every backslash doubled for the string value.
+exec_value=$(printf '%s' "$dest/zlo" | sed -e 's/[\\"`$]/\\&/g' -e 's/%/%%/g' -e 's/\\/\\\\/g')
 cat > "$share/applications/$entry.desktop" <<DESKTOP
 [Desktop Entry]
 Type=Application
 Name=$name
 Comment=IronClaw agents
-Exec="$dest/zlo"
+Exec="$exec_value"
 Icon=$entry
 Terminal=false
 Categories=Development;

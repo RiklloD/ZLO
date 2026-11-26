@@ -60,7 +60,10 @@ const TERMINALS: [(&str, &[&str]); 9] = [
 pub fn run(command: &str) -> Result<(), String> {
     let path = &crate::system::search_path();
     let shell = crate::system::script_shell().program;
-    let line = script(command);
+    // The login PATH ZLO found the command on, set after the shell's own
+    // startup: a non-interactive bash skips `.bashrc`, where nvm and the
+    // like put their tools.
+    let line = format!("export PATH={}; {}", shell_quote(path), script(command));
     for (name, args) in TERMINALS {
         let Some(program) = crate::system::find_on_path(name, path) else {
             continue;

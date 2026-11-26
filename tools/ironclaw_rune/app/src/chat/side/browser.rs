@@ -67,6 +67,7 @@ const PROGRESS_HOLD: Duration = Duration::from_millis(200);
 /// Show `url` in the Browser tab.
 pub(super) fn go(s: &mut State, url: String) {
     let source = Source::Url(url.clone());
+    let external = url.clone();
     PAGE.with(|p| *p.borrow_mut() = Some(url.clone()));
     if let Some(x) = side_mut(s) {
         x.browser.input.replace_text(url.clone());
@@ -76,18 +77,18 @@ pub(super) fn go(s: &mut State, url: String) {
     }
     if !native_view::available() {
         // No embedded web view here (Linux): the system browser shows it,
-        // and the tab keeps the address with a way to open it again.
-        open_externally(&source);
+        // and the tab keeps the address with a way to open it again. Through
+        // `Tx::open_url`, which a scripted run records instead of opening.
+        s.rt.handle
+            .update(move |_, tx| open_externally(&external, tx));
     }
     native_view::load(Slot::Browser, &source);
     super::show(s, Tab::Browser);
     start(s);
 }
 
-fn open_externally(source: &Source) {
-    if let Source::Url(url) = source
-        && let Err(e) = crate::system::open(url)
-    {
+fn open_externally(url: &str, tx: &mut Tx) {
+    if let Err(e) = tx.open_url(url) {
         tracing::warn!(error = %e, "page not opened in the browser");
     }
 }
@@ -542,7 +543,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
             ))
             .child(
                 ui::btn("Open it again")
-                    .on_press(move |_: &mut State| open_externally(&Source::Url(url.clone())))
+                    .on_press_tx(move |_: &mut State, tx| open_externally(&url, tx))
                     .build(k)
                     .key("web-open-again"),
             ),

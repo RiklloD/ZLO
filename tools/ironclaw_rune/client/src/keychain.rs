@@ -103,14 +103,10 @@ mod file {
     use std::collections::HashMap;
     use std::fs;
     use std::io::Write as _;
-    use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+    use std::os::unix::fs::OpenOptionsExt as _;
     use std::path::{Path, PathBuf};
-    use std::sync::Mutex;
 
     use super::KeychainError;
-
-    /// One writer at a time in this process (the app is the only one).
-    static WRITE: Mutex<()> = Mutex::new(());
 
     pub(super) fn default_path() -> Result<PathBuf, KeychainError> {
         let config = std::env::var_os("XDG_CONFIG_HOME")
@@ -131,42 +127,70 @@ mod file {
         }
     }
 
-    /// Read, change and write back the file: a private temp file renamed
-    /// over the old one, so a crash never leaves half a file.
+    /// Read, change and write back the file under an exclusive lock on a
+    /// sibling lock file, held across the whole read-modify-rename, so two
+    /// processes (ZLO and ZLO Light share the file) never drop each other's
+    /// change. The new content goes to a temp file created exclusively at
+    /// mode 0600 (never through an existing file or link), then renamed over
+    /// the old one, so a crash never leaves half a file.
     pub(super) fn update(
         path: &Path,
         change: impl FnOnce(&mut HashMap<String, String>),
     ) -> Result<(), KeychainError> {
-        let _held = WRITE
-            .lock()
-            .map_err(|e| KeychainError(format!("token file lock poisoned: {e}")))?;
-        let mut all = read(path)?;
-        change(&mut all);
+        let fail = |what: &str, e: std::io::Error| {
+            KeychainError(format!("token file {} ({what}): {e}", path.display()))
+        };
         let dir = path
             .parent()
             .ok_or_else(|| KeychainError(format!("token file {} has no folder", path.display())))?;
-        fs::create_dir_all(dir)
-            .map_err(|e| KeychainError(format!("token folder {}: {e}", dir.display())))?;
+        fs::create_dir_all(dir).map_err(|e| fail("folder", e))?;
+        let _lock = lock(dir).map_err(|e| fail("lock", e))?;
+        let mut all = read(path)?;
+        change(&mut all);
         let bytes = serde_json::to_vec_pretty(&all)
             .map_err(|e| KeychainError(format!("tokens not serialized: {e}")))?;
         let tmp = dir.join(format!(".device-tokens.{}.tmp", std::process::id()));
+        // A temp file left by a crashed run of this pid; the lock is ours.
+        match fs::remove_file(&tmp) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(fail("stale temp file", e)),
+        }
         let written = fs::OpenOptions::new()
             .write(true)
-            .create(true)
-            .truncate(true)
+            .create_new(true)
             .mode(0o600)
             .open(&tmp)
             .and_then(|mut f| {
-                // A temp file left by an older run keeps its old mode.
-                f.set_permissions(fs::Permissions::from_mode(0o600))?;
                 f.write_all(&bytes)?;
                 f.sync_all()
             })
             .and_then(|()| fs::rename(&tmp, path));
         written.map_err(|e| {
-            let _ = fs::remove_file(&tmp);
-            KeychainError(format!("token file {}: {e}", path.display()))
+            let _ = fs::remove_file(&tmp); // silent-ok: best-effort cleanup of our own temp file
+            fail("write", e)
         })
+    }
+
+    /// The exclusive lock on `dir/.device-tokens.lock`, released when the
+    /// returned file drops. A lock file that is a symlink is refused.
+    fn lock(dir: &Path) -> std::io::Result<fs::File> {
+        let path = dir.join(".device-tokens.lock");
+        if fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("{} is a symlink; not locking through it", path.display()),
+            ));
+        }
+        // Never written to: only locked.
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .mode(0o600)
+            .open(&path)?;
+        file.lock()?;
+        Ok(file)
     }
 }
 
@@ -239,5 +263,29 @@ mod tests {
         assert!(!all.contains_key("env-a"));
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "only this user reads the tokens");
+    }
+
+    /// Writers racing on the file (two processes, here threads with their
+    /// own lock handles) each keep their token: none is lost to a stale read.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn concurrent_writers_never_drop_a_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ZLO").join("device-tokens.json");
+        let threads: Vec<_> = (0..16)
+            .map(|n| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    file::update(&path, |all| {
+                        all.insert(format!("env-{n}"), format!("icd_{n}"));
+                    })
+                    .unwrap();
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert_eq!(file::read(&path).unwrap().len(), 16);
     }
 }
