@@ -97,8 +97,11 @@ pub struct WorkspaceState {
     /// Bumped per connect: a stale connect answer or retry timer is dropped.
     pub connect_gen: jobs::Generation,
     pub inbox: inbox::Inbox,
-    /// Unread inbox notifications, for the Notifications badge. The
-    /// notifications page writes it too ([`set_unread`]).
+    /// Unread inbox notifications on the focused computer.
+    pub focused_unread: usize,
+    /// Total unread inbox notifications (focused + ready peers), for the
+    /// Notifications badge. The notifications page writes the focused count
+    /// through [`set_unread`].
     pub unread: usize,
     pub alerts: Alerts,
     pub titles: crate::titles::Titles,
@@ -114,6 +117,12 @@ pub struct WorkspaceState {
     /// The new-thread draft's triage state while it is a triage draft;
     /// kept across a switch to another computer (`triage::carry`).
     pub(crate) triage: Option<triage::TriageDraft>,
+    /// An unsent new-thread draft carried across a computer focus switch
+    /// ("Runs on" picker or "New threads start on" preference).
+    pub(crate) carried_draft: Option<draft::runs_on::CarriedDraft>,
+    /// Whether the "New threads start on" select menu on Settings → Computers
+    /// is open.
+    pub default_computer_menu: bool,
     /// The ⌘K menu while open.
     pub command: Option<command::CommandMenu>,
     pub command_opens: u64,
@@ -162,6 +171,7 @@ impl Default for WorkspaceState {
             connect_attempt: 0,
             connect_gen: Default::default(),
             inbox: inbox::Inbox::new(),
+            focused_unread: 0,
             unread: 0,
             alerts: Alerts::default(),
             titles: Default::default(),
@@ -171,6 +181,8 @@ impl Default for WorkspaceState {
             draft: None,
             draft_opens: Default::default(),
             triage: None,
+            carried_draft: None,
+            default_computer_menu: false,
             command: None,
             command_opens: 0,
             message_search: Default::default(),
@@ -318,7 +330,7 @@ pub(crate) fn connected(
     let triage_draft = triage::connected(s);
     // Plugins' slots: read once per connection, again on lifecycle changes.
     crate::plugins::refresh_slots(s);
-    if triage_draft {
+    if triage_draft || draft::runs_on::connected(s) {
         return;
     }
     let reopen = reopen.filter(|id| s.workspace.inbox.row(id).is_some());
@@ -645,6 +657,16 @@ fn dismiss(s: &mut State) -> bool {
     if crate::chat::model_picker::close_open(s) || inbox::picker::close(s) {
         return true;
     }
+    if let Some(d) = s.workspace.draft.as_mut()
+        && d.runs_on_open
+    {
+        d.runs_on_open = false;
+        return true;
+    }
+    if s.workspace.default_computer_menu {
+        s.workspace.default_computer_menu = false;
+        return true;
+    }
     if in_settings(s) {
         back_to_threads(s);
         return true;
@@ -804,9 +826,15 @@ pub fn run_ended(s: &mut State, thread_id: String, failed: bool) {
     crate::remote::peers::refresh(s);
     if !s.workspace.window_active {
         let title = crate::titles::get(s, &thread_id);
-        s.workspace
-            .alerts
-            .post_run(&thread_id, failed, title.as_deref());
+        let computer = s.onboarding.computer.key();
+        let label = multiple_computers_connected(s).then(|| s.onboarding.computer.label());
+        s.workspace.alerts.post_run(
+            &computer,
+            label.as_deref(),
+            &thread_id,
+            failed,
+            title.as_deref(),
+        );
     }
 }
 
@@ -923,6 +951,77 @@ pub fn poll(s: &mut State, tx: &mut Tx) -> bool {
     changed
 }
 
+/// Whether more than one computer is currently connected (the focused computer
+/// plus at least one ready peer). Single-computer views omit computer labels.
+pub(crate) fn multiple_computers_connected(s: &State) -> bool {
+    let focused_ready = matches!(s.conn, Conn::Ready);
+    let peer_ready = crate::remote::peers::list(s)
+        .into_iter()
+        .filter(|p| p.conn == crate::remote::peers::PeerConn::Ready)
+        .count();
+    (usize::from(focused_ready) + peer_ready) > 1
+}
+
+/// Recompute the bell badge count from the focused computer plus every ready
+/// peer's unread notifications.
+pub(crate) fn sync_unread(s: &mut State) {
+    let peer_unread: usize = crate::remote::peers::list(s)
+        .into_iter()
+        .filter(|p| p.conn == crate::remote::peers::PeerConn::Ready)
+        .map(|p| {
+            p.notifications
+                .iter()
+                .filter(|n| n.read_at.is_none())
+                .count()
+        })
+        .sum();
+    s.workspace.unread = s.workspace.focused_unread + peer_unread;
+}
+
+/// A ready peer's unread notifications page landed (`remote::peers_io`):
+/// prime or post system notifications for new items and update the bell count.
+pub(crate) fn peer_notifications_landed(s: &mut State, key: &str) {
+    let Some(peer) = crate::remote::peers::get(s, key) else {
+        sync_unread(s);
+        return;
+    };
+    let label = peer.computer.label();
+    let notifications = peer.notifications.clone();
+    let titles: std::collections::HashMap<String, String> = peer
+        .inbox
+        .as_ref()
+        .map(|inbox| {
+            inbox
+                .rows
+                .iter()
+                .filter_map(|r| {
+                    r.title
+                        .as_deref()
+                        .filter(|t| !t.trim().is_empty())
+                        .map(|t| (r.thread_id.clone(), t.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let multi = multiple_computers_connected(s);
+    let fresh: Vec<_> = s
+        .workspace
+        .alerts
+        .take_new(key, &notifications)
+        .into_iter()
+        .cloned()
+        .collect();
+    for item in fresh {
+        let thread_title = crate::alerts::thread_of(&item)
+            .and_then(|tid| titles.get(tid))
+            .map(String::as_str);
+        s.workspace
+            .alerts
+            .post(key, multi.then_some(label.as_str()), &item, thread_title);
+    }
+    sync_unread(s);
+}
+
 /// Badge count plus system notifications for new inbox items.
 pub fn refresh_unread(s: &mut State) {
     jobs::run(
@@ -935,10 +1034,13 @@ pub fn refresh_unread(s: &mut State) {
             let looking_at = (s.workspace.window_active && s.page == Page::Chat)
                 .then(|| active_id(s).map(str::to_string))
                 .flatten();
+            let computer = s.onboarding.computer.key();
+            let computer_label =
+                multiple_computers_connected(s).then(|| s.onboarding.computer.label());
             let fresh: Vec<_> = s
                 .workspace
                 .alerts
-                .take_new(&page.notifications)
+                .take_new(&computer, &page.notifications)
                 .into_iter()
                 .cloned()
                 .collect();
@@ -947,18 +1049,28 @@ pub fn refresh_unread(s: &mut State) {
                 if thread.is_some() && thread == looking_at {
                     continue;
                 }
+                let computer = computer.clone();
+                let computer_label = computer_label.clone();
                 // Automation runs are not in the thread list; fetch their
                 // title first so the alert can name them.
                 let Some(thread) = thread else {
-                    s.workspace.alerts.post(&item, None);
+                    s.workspace
+                        .alerts
+                        .post(&computer, computer_label.as_deref(), &item, None);
                     continue;
                 };
                 crate::titles::resolve(s, thread, move |s, title, _| {
-                    s.workspace.alerts.post(&item, Some(&title));
+                    s.workspace.alerts.post(
+                        &computer,
+                        computer_label.as_deref(),
+                        &item,
+                        Some(&title),
+                    );
                 });
             }
-            let changed = page.unread_count != s.workspace.unread;
-            s.workspace.unread = page.unread_count;
+            let changed = page.unread_count != s.workspace.focused_unread;
+            s.workspace.focused_unread = page.unread_count;
+            sync_unread(s);
             if changed {
                 crate::pages::notifications::refresh(s);
             }
@@ -966,23 +1078,39 @@ pub fn refresh_unread(s: &mut State) {
     );
 }
 
-/// A system notification was clicked: bring the window up on its thread.
+/// A system notification was clicked: bring the window up on its thread and
+/// computer.
 pub fn alert_clicked(s: &mut State, tag: &str) {
-    if let Some(thread) = s.workspace.alerts.thread_for(tag) {
-        open_thread(s, thread);
-    }
-    // `run:` tags are local; every other tag is an inbox notification id.
-    if tag.starts_with("run:") {
+    let Some(target) = s.workspace.alerts.target_for(tag) else {
         return;
+    };
+    let focused_key = s.onboarding.computer.key();
+    if let Some(thread) = target.thread_id {
+        crate::remote::peers::focus_thread(s, &target.computer, thread);
+    } else if target.computer != focused_key {
+        crate::remote::peers::focus(s, &target.computer);
     }
-    let id = tag.to_string();
-    jobs::run(
-        s,
-        "notifications",
-        move |c| async move { c.mark_notification_read(&id).await },
-        // silent-ok: read state is cosmetic; the next poll recounts.
-        |s, _, _| refresh_unread(s),
-    );
+    let Some(id) = target.notification_id else {
+        return;
+    };
+    if s.onboarding.computer.key() == target.computer {
+        jobs::run(
+            s,
+            "notifications",
+            move |c| async move { c.mark_notification_read(&id).await },
+            // silent-ok: read state is cosmetic; the next poll recounts.
+            |s, _, _| refresh_unread(s),
+        );
+    } else {
+        let key = target.computer.clone();
+        crate::remote::peers::run(
+            s,
+            &key,
+            "notifications",
+            move |c| async move { c.mark_notification_read(&id).await },
+            |s, _, _| crate::remote::peers::refresh(s),
+        );
+    }
 }
 
 /// `App::on_focus`: the window became key or lost it.
@@ -1049,9 +1177,10 @@ pub fn titles_ensure(s: &mut State, thread_ids: impl IntoIterator<Item = String>
     crate::titles::ensure(s, thread_ids);
 }
 
-/// The Notifications page counted unread items itself.
+/// The Notifications page counted unread items on the focused computer itself.
 pub fn set_unread(s: &mut State, unread: usize) {
-    s.workspace.unread = unread;
+    s.workspace.focused_unread = unread;
+    sync_unread(s);
 }
 
 /// Whether a handler asked for motion (`Tx::animated`). Rune keeps the flag

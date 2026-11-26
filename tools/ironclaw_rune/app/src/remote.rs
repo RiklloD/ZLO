@@ -100,6 +100,8 @@ pub struct RemoteState {
     pub linked: linked::LinkedState,
     /// Background connections to every non-focused usable computer (`peers.rs`).
     pub peers: peers::Peers,
+    /// Cached computer-use readiness of the focused backend, when last queried.
+    pub focused_computer_readiness: Option<zlo_client::computer_use::ComputerUseReadiness>,
 }
 
 #[derive(Clone, Debug)]
@@ -128,6 +130,7 @@ impl Default for RemoteState {
             route_rank: 0,
             linked: Default::default(),
             peers: Default::default(),
+            focused_computer_readiness: None,
         }
     }
 }

@@ -10,6 +10,7 @@
 //! dragged from the sidebar onto the card attaches its transcript
 //! (`thread_drag`).
 
+pub(super) mod runs_on;
 mod snapshot;
 mod submit;
 
@@ -43,6 +44,10 @@ pub struct DraftState {
     /// The draft's model and effort pick (area H draws and owns it).
     pub picker: ModelPickerState,
     pub menu_open: bool,
+    /// The "Runs on" computer picker menu is open.
+    pub runs_on_open: bool,
+    /// One-line note when the preferred default computer was not ready.
+    pub computer_note: Option<String>,
     /// Files for the first message, handed to the thread on send; each has
     /// its card in `input`.
     pub staged: Vec<StagedFile>,
@@ -137,6 +142,10 @@ pub fn composer_edit<'a>(s: &'a mut State, target: &ComposerTarget) -> Option<&'
 pub(super) fn open(s: &mut State) {
     s.page = Page::Draft;
     if s.workspace.draft.is_none() {
+        let computer_note = match runs_on::apply_default_on_open(s) {
+            runs_on::DefaultOutcome::Switched => return,
+            runs_on::DefaultOutcome::Stay(note) => note,
+        };
         let list = &s.workspace.inbox.list;
         let saved = drafts::restore(s, drafts::NEW_THREAD);
         // A saved draft keeps its profile while that profile exists.
@@ -148,6 +157,7 @@ pub(super) fn open(s: &mut State) {
             .or_else(|| list.profiles.first().map(|p| p.profile_id.clone()))
             .unwrap_or_else(|| DEFAULT_PROFILE_ID.into());
         let mut draft = empty_draft(&profile);
+        draft.computer_note = computer_note;
         if let Some(saved) = saved {
             draft.staged = saved.files;
             let pills: Vec<_> = saved.tokens.into_iter().map(|t| (t.range, t.id)).collect();
@@ -721,6 +731,7 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
         .key("composer-actions")
         .gap(6.)
         .center_y()
+        .children(runs_on::control(s, k, layer))
         .child(place)
         .child(attach_button)
         .child(crate::voice::ui::composer_controls(
@@ -828,6 +839,16 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
     if let Some(error) = draft.error.clone() {
         body = body.child(el().max_w(HERO_WIDTH).child(t(error, SM, p.danger).wrap()));
     }
+    if let Some(note) = draft.computer_note.clone() {
+        body = body.child(
+            el().key("draft-computer-note")
+                .max_w(HERO_WIDTH)
+                .child(t(note, XS, p.text_muted).wrap()),
+        );
+    }
+    if let Some(cu_note) = runs_on::computer_use_note(s, k) {
+        body = body.child(cu_note);
+    }
     // Room under the card so it sits just above the middle, like t3code.
     let body = body.child(el().h(80.));
     // A flat panel: no glow, no band; a wallpaper, when one is picked, is
@@ -870,6 +891,8 @@ pub(super) fn empty_draft(profile: &str) -> DraftState {
         input: TextEdit::new(""),
         picker: ModelPickerState::default(),
         menu_open: false,
+        runs_on_open: false,
+        computer_note: None,
         staged: Vec::new(),
         menu: ComposerMenu::default(),
         sending: false,

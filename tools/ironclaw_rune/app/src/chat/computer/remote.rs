@@ -72,22 +72,73 @@ pub(super) fn fetch(s: &mut State, thread_id: String, generation: Generation) {
         "computer use readiness",
         move |c| async move { c.computer_readiness().await },
         move |s, result, _| {
-            let Some(cu) = same(s, &thread_id, generation) else {
-                return;
-            };
-            match result {
-                Ok(readiness) => {
-                    cu.remote = Some(Remote {
-                        readiness,
-                        at: Instant::now(),
-                    });
-                }
+            let Ok(readiness) = result else {
                 // silent-ok: an older backend has no readiness route, or this
                 // device is not an operator there; no line is shown then.
-                Err(e) => tracing::debug!(error = %e, "computer-use readiness unavailable"),
+                if let Err(e) = result {
+                    tracing::debug!(error = %e, "computer-use readiness unavailable");
+                }
+                return;
+            };
+            s.remote.focused_computer_readiness = Some(readiness.clone());
+            let unavailable = !readiness.ready();
+            if let Some(cu) = same(s, &thread_id, generation) {
+                cu.remote = Some(Remote {
+                    readiness,
+                    at: Instant::now(),
+                });
+            }
+            if unavailable {
+                probe_peers(s);
             }
         },
     );
+}
+
+/// Probe ready peers' computer-use readiness on demand (never on a timer) so
+/// the "not available" note can name a computer that can run computer use.
+pub(crate) fn probe_peers(s: &mut State) {
+    let keys: Vec<String> = crate::remote::peers::list(s)
+        .into_iter()
+        .filter(|p| p.conn == crate::remote::peers::PeerConn::Ready)
+        .map(|p| p.computer.key())
+        .collect();
+    for key in keys {
+        if !crate::remote::peers::claim_computer_readiness_probe(s, &key) {
+            continue;
+        }
+        let target = key.clone();
+        crate::remote::peers::run(
+            s,
+            &key,
+            "computer use readiness",
+            |c| async move { c.computer_readiness().await },
+            move |s, result, _| match result {
+                Ok(readiness) => {
+                    crate::remote::peers::set_computer_readiness(s, &target, readiness);
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        computer = %target,
+                        error = %e,
+                        "peer computer-use readiness unavailable"
+                    );
+                }
+            },
+        );
+    }
+}
+
+/// The first ready peer whose backend is known to be ready for computer use:
+/// `(computer_key, display_label)`.
+pub(crate) fn capable_peer(s: &State) -> Option<(String, String)> {
+    crate::remote::peers::list(s)
+        .into_iter()
+        .find(|p| {
+            p.conn == crate::remote::peers::PeerConn::Ready
+                && p.computer_readiness.as_ref().is_some_and(|r| r.ready())
+        })
+        .map(|p| (p.computer.key(), p.computer.label()))
 }
 
 #[cfg(test)]

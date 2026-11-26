@@ -54,6 +54,8 @@ pub(super) fn connect_peer(s: &mut State, key: &str) {
     peer.conn = PeerConn::Connecting;
     peer.retry_at = None;
     peer.pending_backend = None;
+    peer.computer_readiness = None;
+    peer.computer_readiness_probed = false;
     let key_owned = key.to_string();
     let tokens = s.remote.tokens.clone();
     let rt = s.rt.clone();
@@ -167,6 +169,7 @@ fn open_peer(s: &mut State, key: &str, generation: Generation, r: Resolved, tx: 
                     }
                     tracing::debug!(computer = %key_owned, "peer connected");
                     crate::remote::retain_tunnels(s);
+                    crate::workspace::peer_notifications_landed(s, &key_owned);
                 }
                 Err(e) => {
                     let problem = connect::problem_of(&computer, &e);
@@ -283,6 +286,7 @@ pub(super) fn refresh_peer(s: &mut State, key: &str) {
                     } else {
                         peer.poll_at = None;
                     }
+                    crate::workspace::peer_notifications_landed(s, &key_owned);
                 }
                 Err(e) if e.is_unauthorized() => {
                     let problem = connect::problem_of(&peer.computer, &e);

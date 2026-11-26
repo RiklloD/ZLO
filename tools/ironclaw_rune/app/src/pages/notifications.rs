@@ -3,7 +3,7 @@
 
 use rune::{Cursor, Cx, El, col, el, row};
 use rune_kit::Kit;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rune::Tx;
 use zlo_client::notification_inbox::{
@@ -46,6 +46,10 @@ pub struct NotificationsState {
     /// The person's changes the view already shows (so they ride the
     /// click) while the gateway has not confirmed them, by what they change.
     pending: HashMap<Change, Pending>,
+    /// Optimistically archived peer notifications: `(computer_key, id)`.
+    peer_archived: HashSet<(String, String)>,
+    /// Optimistically read peer notifications: `(computer_key, id)`.
+    peer_read: HashSet<(String, String)>,
     /// The listing whose answer may land; every newer listing or change
     /// replaces it, so an older answer never overwrites newer state.
     list_gen: jobs::Generation,
@@ -89,6 +93,7 @@ pub fn opened(s: &mut State) {
 
 pub fn refresh(s: &mut State) {
     load_channels(s, false);
+    crate::remote::peers::refresh(s);
     let asked = s.pages.notifications.list_gen.bump();
     jobs::run(
         s,
@@ -270,6 +275,93 @@ fn mark_all_read(s: &mut State) {
     mutate(s, Change::ReadAll, |c| async move {
         c.mark_all_notifications_read().await
     });
+    let peer_keys: Vec<String> = crate::remote::peers::list(s)
+        .into_iter()
+        .filter(|p| {
+            p.conn == crate::remote::peers::PeerConn::Ready
+                && p.notifications.iter().any(|n| n.read_at.is_none())
+        })
+        .map(|p| p.computer.key())
+        .collect();
+    for key in peer_keys {
+        let ids: Vec<String> = crate::remote::peers::get(s, &key)
+            .map(|p| {
+                p.notifications
+                    .iter()
+                    .filter(|n| n.read_at.is_none())
+                    .map(|n| n.id.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        for id in ids {
+            s.pages.notifications.peer_read.insert((key.clone(), id));
+        }
+        crate::remote::peers::run(
+            s,
+            &key,
+            "notifications",
+            |c| async move { c.mark_all_notifications_read().await },
+            |s, _, _| crate::remote::peers::refresh(s),
+        );
+    }
+}
+
+/// Open a notification belonging to a background peer: focus that computer
+/// (and its thread when the notification names one) and mark it read.
+fn open_peer(s: &mut State, computer: String, id: String, thread: Option<String>, unread: bool) {
+    if unread {
+        s.pages
+            .notifications
+            .peer_read
+            .insert((computer.clone(), id.clone()));
+    }
+    if let Some(thread) = thread {
+        crate::remote::peers::focus_thread(s, &computer, thread);
+    } else {
+        crate::remote::peers::focus(s, &computer);
+    }
+    if !unread {
+        return;
+    }
+    if s.onboarding.computer.key() == computer {
+        jobs::run(
+            s,
+            "notifications",
+            move |c| async move { c.mark_notification_read(&id).await },
+            |s, _, _| crate::workspace::refresh_unread(s),
+        );
+    } else {
+        crate::remote::peers::run(
+            s,
+            &computer,
+            "notifications",
+            move |c| async move { c.mark_notification_read(&id).await },
+            |s, _, _| crate::remote::peers::refresh(s),
+        );
+    }
+}
+
+/// Archive a notification belonging to a background peer.
+fn archive_peer(s: &mut State, computer: String, id: String) {
+    s.pages
+        .notifications
+        .peer_archived
+        .insert((computer.clone(), id.clone()));
+    let rollback_key = (computer.clone(), id.clone());
+    crate::remote::peers::run(
+        s,
+        &computer,
+        "notifications",
+        move |c| async move { c.archive_notification(&id).await },
+        move |s, result, tx| match result {
+            Ok(_) => crate::remote::peers::refresh(s),
+            Err(e) => {
+                tx.animated();
+                s.pages.notifications.peer_archived.remove(&rollback_key);
+                s.pages.notifications.error = Some(e.to_string());
+            }
+        },
+    );
 }
 
 /// Show `change` now and send it. Any listing still on its way was asked
@@ -403,6 +495,99 @@ fn render_row(s: &State, k: &Kit, item: &ProductNotification) -> El {
     )
 }
 
+fn render_peer_row(
+    s: &State,
+    k: &Kit,
+    peer_key: &str,
+    peer_label: &str,
+    item: &ProductNotification,
+    thread_title: Option<String>,
+) -> El {
+    let p = &s.palette;
+    let (icon, title) = describe(item.kind);
+    let tint = match item.severity {
+        ProductNotificationSeverity::Error => p.danger,
+        ProductNotificationSeverity::Warning => p.warning,
+        ProductNotificationSeverity::Success => p.success,
+        ProductNotificationSeverity::Info => p.text_muted,
+    };
+    let unread = item.read_at.is_none()
+        && !s
+            .pages
+            .notifications
+            .peer_read
+            .contains(&(peer_key.to_string(), item.id.clone()));
+    let thread = thread_of(item).map(str::to_string);
+    let subtitle = thread
+        .as_ref()
+        .map(|_| thread_title.unwrap_or_else(|| "Conversation".to_string()));
+    let open_computer = peer_key.to_string();
+    let open_id = item.id.clone();
+    let open_thread = thread.clone();
+    let archive_computer = peer_key.to_string();
+    let archive_id = item.id.clone();
+    let row_key = format!("notification-{peer_key}-{}", item.id);
+
+    let mut text_col = col().grow(1.0).min_w(0.).child(
+        row()
+            .gap(6.)
+            .center_y()
+            .child(label(title, SM, if unread { 600. } else { 400. }, p.text))
+            .child(label(peer_label.to_string(), XS, 400., p.text_faint)),
+    );
+    if let Some(sub) = subtitle {
+        text_col = text_col.child(label(sub, XS, 400., p.text_muted).truncate());
+    }
+    let mut r = row()
+        .key(row_key)
+        .role("button")
+        .label(format!("{peer_label}: {title}"))
+        .hover_group()
+        .w_full()
+        .gap(12.)
+        .px(12.)
+        .py(10.)
+        .radius(crate::design::ROW_RADIUS)
+        .center_y()
+        .cursor(Cursor::Pointer)
+        .hover(p.hover)
+        .hover_motion(motion::HOVER, motion::HOVER)
+        .press_scale(motion::PRESS_CARD)
+        .motion(motion::ROW_RESORT)
+        .transition(motion::reveal())
+        .on_press(move |s: &mut State| {
+            open_peer(
+                s,
+                open_computer.clone(),
+                open_id.clone(),
+                open_thread.clone(),
+                unread,
+            )
+        })
+        .child(glyph(icon, 16., tint))
+        .child(text_col)
+        .child(label(jobs::ago(item.created_at), XS, 400., p.text_muted));
+    if unread {
+        r = r.child(
+            el().key("unread")
+                .size(8., 8.)
+                .radius(4.)
+                .fill(p.accent)
+                .transition(motion::glyph_pop()),
+        );
+    }
+    r.child(
+        row().key("archive").group_opacity(0., 1.).child(
+            icon_button(&icons::INBOX, "Archive")
+                .on_press(move |s: &mut State| {
+                    archive_peer(s, archive_computer.clone(), archive_id.clone())
+                })
+                .build(k)
+                .press_scale(motion::PRESS),
+        ),
+    )
+}
+
 pub fn thread_of(item: &ProductNotification) -> Option<&str> {
     match &item.action {
         ProductNotificationAction::OpenThread { thread_id } => Some(thread_id),
@@ -424,7 +609,17 @@ pub fn describe(kind: ProductNotificationKind) -> (&'static rune::Icon, &'static
 pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El {
     let p = &s.palette;
     let this = &s.pages.notifications;
-    let has_unread = this.shown().any(|n| this.unread(n));
+    let peers = crate::remote::peers::list(s);
+    let peer_has_unread = peers.iter().any(|peer| {
+        peer.conn == crate::remote::peers::PeerConn::Ready
+            && peer.notifications.iter().any(|n| {
+                let key = (peer.computer.key(), n.id.clone());
+                !this.peer_archived.contains(&key)
+                    && n.read_at.is_none()
+                    && !this.peer_read.contains(&key)
+            })
+    });
+    let has_unread = this.shown().any(|n| this.unread(n)) || peer_has_unread;
     let mut head = Vec::new();
     if has_unread {
         head.push(
@@ -438,7 +633,39 @@ pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, _layer: &mut Vec<El>) -> El
     }
     head.push(refresh_button(k, refresh));
 
-    let rows: Vec<El> = this.shown().map(|item| render_row(s, k, item)).collect();
+    let mut rows: Vec<El> = this.shown().map(|item| render_row(s, k, item)).collect();
+    for peer in peers
+        .into_iter()
+        .filter(|peer| peer.conn == crate::remote::peers::PeerConn::Ready)
+    {
+        let peer_key = peer.computer.key();
+        let peer_label = peer.computer.label();
+        for item in &peer.notifications {
+            if this
+                .peer_archived
+                .contains(&(peer_key.clone(), item.id.clone()))
+            {
+                continue;
+            }
+            let thread_title = thread_of(item).and_then(|tid| {
+                peer.inbox.as_ref().and_then(|inbox| {
+                    inbox
+                        .rows
+                        .iter()
+                        .find(|r| r.thread_id == tid)
+                        .and_then(|r| r.title.clone())
+                })
+            });
+            rows.push(render_peer_row(
+                s,
+                k,
+                &peer_key,
+                &peer_label,
+                item,
+                thread_title,
+            ));
+        }
+    }
     let mut body = col()
         .w_full()
         .child(header(p, "Notifications", actions(head)));

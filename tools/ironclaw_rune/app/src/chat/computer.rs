@@ -34,7 +34,7 @@ mod fixtures;
 #[cfg(test)]
 mod motion_tests;
 mod pointer;
-mod remote;
+pub(crate) mod remote;
 #[cfg(test)]
 mod tests;
 mod view;
