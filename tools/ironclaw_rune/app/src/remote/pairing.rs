@@ -144,17 +144,11 @@ pub fn found_unsaved(s: &State) -> Vec<&Found> {
 
 /// What this Mac tells a computer about itself when pairing.
 fn me() -> PairClient {
-    let name = std::process::Command::new("/usr/sbin/scutil")
-        .args(["--get", "ComputerName"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| "Mac".to_string());
+    let name =
+        crate::system::computer_name().unwrap_or_else(|| crate::system::FALLBACK_NAME.to_string());
     PairClient {
         label: name,
-        os: "macOS".into(),
+        os: crate::system::OS_NAME.into(),
         app_version: env!("CARGO_PKG_VERSION").into(),
     }
 }

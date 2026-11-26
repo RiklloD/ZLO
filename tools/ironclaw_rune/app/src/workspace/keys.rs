@@ -19,13 +19,13 @@ type Binding = (&'static str, &'static str, fn(&mut State, &mut Tx));
 // see move: a column sliding, the composer flying back to a new draft, ⌘K
 // or the model picker rising, the status bar folding, the palette morphing.
 const BINDINGS: &[Binding] = &[
-    ("New Thread", "cmd+shift+o", |s, tx| {
+    ("New Thread", "mod+shift+o", |s, tx| {
         tx.animated();
         new_thread(s)
     }),
     // The column toggles slide like their titlebar buttons, on the panels'
     // one curve.
-    ("Toggle Sidebar", "cmd+b", |s, tx| {
+    ("Toggle Sidebar", "mod+b", |s, tx| {
         tx.animated();
         super::toggle_sidebar(s, tx)
     }),
@@ -35,7 +35,7 @@ const BINDINGS: &[Binding] = &[
     }),
     // ⌘J opens and closes the middle column (the work panel) with the
     // same slide as its titlebar button; ⌘E stays an alias (`ALIASES`).
-    ("Toggle Workspace Panel", "cmd+j", |s, tx| {
+    ("Toggle Workspace Panel", "mod+j", |s, tx| {
         crate::chat::side::dock_slide(s, tx);
         toggle_work_panel(s)
     }),
@@ -43,26 +43,26 @@ const BINDINGS: &[Binding] = &[
         tx.animated();
         new_side_chat(s)
     }),
-    ("Command Menu…", "cmd+k", |s, tx| {
+    ("Command Menu…", "mod+k", |s, tx| {
         tx.animated();
         open_command_menu(s)
     }),
-    ("Model Picker…", "cmd+shift+m", |s, tx| {
+    ("Model Picker…", "mod+shift+m", |s, tx| {
         tx.animated();
         crate::chat::model_picker::open(s)
     }),
-    ("Toggle Status Bar", "cmd+shift+s", |s, tx| {
+    ("Toggle Status Bar", "mod+shift+s", |s, tx| {
         tx.animated();
         super::toggle_status_bar(s)
     }),
-    ("Toggle Light and Dark", "cmd+shift+y", |s, tx| {
+    ("Toggle Light and Dark", "mod+shift+y", |s, tx| {
         super::toggle_scheme(s, tx)
     }),
 ];
 
 /// Extra chords for a View menu action, matched by `on_key` only (a menu
 /// item carries one key equivalent): the action's title, then the chord.
-const ALIASES: &[(&str, &str)] = &[("Toggle Workspace Panel", "cmd+e")];
+const ALIASES: &[(&str, &str)] = &[("Toggle Workspace Panel", "mod+e")];
 
 /// The View menu action titled `title`, for tests that run it as the menu does.
 #[cfg(test)]
@@ -75,7 +75,7 @@ pub(crate) fn action(title: &str) -> fn(&mut State, &mut Tx) {
 }
 
 /// The app menu's "Quit ZLO" and its chord.
-const QUIT: (&str, &str) = ("Quit ZLO", "cmd+q");
+const QUIT: (&str, &str) = ("Quit ZLO", "mod+q");
 
 /// The native menus, for `App::menu_item`: "Quit ZLO" in the app menu, then
 /// the View menu.
@@ -154,7 +154,7 @@ fn new_side_chat(s: &mut State) {
 
 pub(super) fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
     // ⌘ alone held: the cards show their ⌘N badges.
-    let held = ev.mods.cmd && !(ev.mods.ctrl || ev.mods.alt || ev.mods.shift);
+    let held = crate::system::primary_alone(ev.mods);
     let modifier_only = matches!(ev.key, Key::Modifier { .. });
     let was = s.workspace.inbox.cmd_held;
     if modifier_only || !held {
@@ -265,8 +265,8 @@ mod tests {
         KeyEvent {
             key: Key::Command(c),
             mods: rune::Mods {
+                // The primary modifier alone: ⌘ on macOS, Ctrl on Linux.
                 cmd: true,
-                logo: true,
                 ..rune::Mods::default()
             },
         }

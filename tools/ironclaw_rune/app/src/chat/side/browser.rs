@@ -74,9 +74,22 @@ pub(super) fn go(s: &mut State, url: String) {
         x.browser.recent.insert(0, url);
         x.browser.recent.truncate(5);
     }
+    if !native_view::available() {
+        // No embedded web view here (Linux): the system browser shows it,
+        // and the tab keeps the address with a way to open it again.
+        open_externally(&source);
+    }
     native_view::load(Slot::Browser, &source);
     super::show(s, Tab::Browser);
     start(s);
+}
+
+fn open_externally(source: &Source) {
+    if let Source::Url(url) = source
+        && let Err(e) = crate::system::open(url)
+    {
+        tracing::warn!(error = %e, "page not opened in the browser");
+    }
 }
 
 /// Close the page: its view goes now, the tab shows the launchpad again.
@@ -517,6 +530,22 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     match page() {
         // Keyed apart, so opening or closing a page crossfades the
         // launchpad with the page (which fades in natively).
+        Some(url) if !native_view::available() => ui::fill_col()
+            .key("web-page")
+            .px(16.)
+            .py(16.)
+            .gap(10.)
+            .child(ui::para(
+                "This page opened in your browser: pages show inside ZLO on macOS only.",
+                xs(),
+                s.palette.text_muted,
+            ))
+            .child(
+                ui::btn("Open it again")
+                    .on_press(move |_: &mut State| open_externally(&Source::Url(url.clone())))
+                    .build(k)
+                    .key("web-open-again"),
+            ),
         Some(_) => ui::fill_col()
             .key("web-page")
             .child(native_view::surface(Slot::Browser)),
@@ -584,6 +613,7 @@ mod tests {
 
     /// The observer's notification wakes the app once; the poll reads the
     /// page and the bar follows it: address, Back, load bar.
+    #[cfg(target_os = "macos")] // WebKit's page observer
     #[test]
     fn a_page_change_is_read_once_into_the_bar() {
         let mut s = browsing("t1");
@@ -612,6 +642,7 @@ mod tests {
     /// A page that changes itself (a redirect after a while, `pushState`
     /// every second) is followed without any input, and never read more
     /// than four times a second.
+    #[cfg(target_os = "macos")] // WebKit's page observer
     #[test]
     fn a_page_changing_itself_is_followed_at_most_four_times_a_second() {
         let mut s = browsing("t1");
@@ -645,6 +676,7 @@ mod tests {
     }
 
     /// Behind another tab the change is dropped; showing the tab reads it.
+    #[cfg(target_os = "macos")] // WebKit's page observer
     #[test]
     fn a_hidden_browser_reads_nothing_until_it_shows() {
         let mut s = browsing("t1");

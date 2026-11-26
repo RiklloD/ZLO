@@ -10,6 +10,11 @@
 //! gateway and its token on its own; see
 //! `zlo_client::Connection::discover`.
 
+// Off macOS, the macOS-only features (voice, SnapShots, native previews,
+// computer-use permissions) are compiled out, which leaves their shared
+// state and helpers unused there; macOS builds keep the full check.
+#![cfg_attr(not(target_os = "macos"), allow(dead_code, unreachable_code))]
+
 mod alerts;
 mod backdrop;
 mod bench;
@@ -37,6 +42,7 @@ mod scenes;
 mod service;
 mod snapshot;
 mod state;
+mod system;
 mod terminal;
 #[cfg(test)]
 mod test_gateway;

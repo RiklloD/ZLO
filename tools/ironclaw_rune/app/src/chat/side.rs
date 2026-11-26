@@ -1134,6 +1134,7 @@ pub(crate) fn short_path(path: &Path) -> String {
 }
 
 #[cfg(test)]
+#[cfg(target_os = "macos")] // the native views exist on macOS only
 mod native_tests;
 
 #[cfg(test)]

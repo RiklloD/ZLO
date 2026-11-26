@@ -2,6 +2,8 @@
 
 ZLO is a window onto an IronClaw backend. By default that backend runs on the same Mac, but it doesn't have to: it can run on a Mac mini, a Linux server, or any machine you own, while ZLO on your laptop only shows the window. This page covers setting that up.
 
+The window itself runs on macOS and Linux (on Linux install it with `sh tools/ironclaw_rune/install-linux.sh`; see the app's README for what differs there), so a Linux box can show its own backend's window too, and a Mac's ZLO can work on it.
+
 - [How it fits together](#how-it-fits-together)
 - [Before you start](#before-you-start)
 - [Set up the backend computer](#set-up-the-backend-computer)
@@ -209,7 +211,7 @@ Once your work lives on another computer, the laptop doesn't need its own backen
   sh tools/ironclaw_rune/bundle.sh --light
   ```
 
-  It installs `~/Applications/ZLO Light.app` next to ZLO (it never replaces it). On first launch it goes straight to **Add a computer**.
+  It installs `~/Applications/ZLO Light.app` next to ZLO (it never replaces it). On first launch it goes straight to **Add a computer**. On Linux, `sh tools/ironclaw_rune/install-linux.sh --light` does the same (installed as "ZLO Light" in the app menu).
 
 ## What works on another computer
 

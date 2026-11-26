@@ -190,7 +190,7 @@ fn report_loop(every: Duration, path: &std::path::Path) {
     }
 }
 
-/// The kernel's per-process accounting (`proc_pid_rusage`).
+/// The kernel's per-process accounting (`proc_pid_rusage`, macOS only).
 mod usage {
     use std::fmt::Write as _;
 
@@ -207,6 +207,7 @@ mod usage {
     const RUSAGE_INFO_V4: i32 = 4;
     const RUSAGE_INFO_V6: i32 = 6;
 
+    #[cfg(target_os = "macos")]
     unsafe extern "C" {
         fn proc_pid_rusage(pid: i32, flavor: i32, buffer: *mut u64) -> i32;
         fn mach_timebase_info(info: *mut [u32; 2]) -> i32;
@@ -223,6 +224,7 @@ mod usage {
         energy_nj: u64,
     }
 
+    #[cfg(target_os = "macos")]
     fn ticks_to_ns(ticks: u64) -> u64 {
         let mut tb = [0u32; 2];
         // SAFETY: `mach_timebase_info` fills two u32s (numer, denom).
@@ -233,6 +235,13 @@ mod usage {
         (ticks as u128 * tb[0] as u128 / tb[1] as u128) as u64
     }
 
+    /// Linux has no `proc_pid_rusage`: the report keeps the counters only.
+    #[cfg(not(target_os = "macos"))]
+    pub fn read(_pid: u32) -> Option<Usage> {
+        None
+    }
+
+    #[cfg(target_os = "macos")]
     pub fn read(pid: u32) -> Option<Usage> {
         let mut buf = [0u64; WORDS];
         // SAFETY: the buffer is larger than `rusage_info_v6`.

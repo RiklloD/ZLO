@@ -503,12 +503,9 @@ pub fn request_access(s: &mut State) {
 
 /// Open a privacy pane in System Settings.
 pub fn open_settings(pane: PrivacyPane) {
-    let _ = std::process::Command::new("/usr/bin/open")
-        .arg(pane.url())
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
+    if let Err(e) = crate::system::open(pane.url()) {
+        tracing::debug!(error = %e, "privacy settings not opened");
+    }
 }
 
 /// Settings → Voice became visible: show the current permission state and

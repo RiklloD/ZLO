@@ -6,7 +6,9 @@
 //! only flips a switch. A remote backend's engine runs under that
 //! computer's macOS instead (`missing_for_backend`).
 
+#[cfg(target_os = "macos")]
 use std::ffi::c_void;
+#[cfg(target_os = "macos")]
 use std::process::{Command, Stdio};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +25,7 @@ impl Permission {
         }
     }
 
+    #[cfg(target_os = "macos")]
     fn settings_url(self) -> &'static str {
         match self {
             Self::Accessibility => {
@@ -35,6 +38,7 @@ impl Permission {
     }
 }
 
+#[cfg(target_os = "macos")]
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
     fn AXIsProcessTrusted() -> bool;
@@ -42,12 +46,14 @@ unsafe extern "C" {
     static kAXTrustedCheckOptionPrompt: *const c_void;
 }
 
+#[cfg(target_os = "macos")]
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
     fn CGPreflightScreenCaptureAccess() -> bool;
     fn CGRequestScreenCaptureAccess() -> bool;
 }
 
+#[cfg(target_os = "macos")]
 #[link(name = "CoreFoundation", kind = "framework")]
 unsafe extern "C" {
     static kCFBooleanTrue: *const c_void;
@@ -64,7 +70,15 @@ unsafe extern "C" {
     fn CFRelease(cf: *const c_void);
 }
 
+/// The permissions ZLO does not have yet. Other systems have no such
+/// switches (and no local computer use), so nothing is missing there.
+#[cfg(not(target_os = "macos"))]
+pub fn missing() -> Vec<Permission> {
+    Vec::new()
+}
+
 /// The permissions ZLO does not have yet.
+#[cfg(target_os = "macos")]
 pub fn missing() -> Vec<Permission> {
     // SAFETY: plain status queries with no arguments.
     let (ax, screen) = unsafe { (AXIsProcessTrusted(), CGPreflightScreenCaptureAccess()) };
@@ -86,8 +100,13 @@ pub fn missing_for_backend(remote: bool) -> Vec<Permission> {
     if remote { Vec::new() } else { missing() }
 }
 
+/// Nothing to ask for on other systems ([`missing`] is always empty).
+#[cfg(not(target_os = "macos"))]
+pub fn request(_: &[Permission]) {}
+
 /// Put ZLO in each missing permission's list (macOS shows its own prompt)
 /// and open System Settings at the first one.
+#[cfg(target_os = "macos")]
 pub fn request(missing: &[Permission]) {
     for permission in missing {
         match permission {

@@ -178,7 +178,9 @@ pub fn from_poll(
     Some(from_check(Ok(status))).filter(|row| shown != Some(row))
 }
 
-/// How many computers have an update waiting.
+/// How many computers have an update waiting (the tests' count; the
+/// footer reads `waiting_keys`).
+#[cfg(test)]
 pub fn waiting(updates: &UpdatesState) -> usize {
     updates
         .rows

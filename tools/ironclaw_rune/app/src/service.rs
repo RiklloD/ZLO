@@ -143,11 +143,16 @@ pub fn light_bundle() -> bool {
     })
 }
 
-/// `…/Some.app/Contents/MacOS/zlo` with no `zlo-backend` beside it.
+/// `…/Some.app/Contents/MacOS/zlo` with no `zlo-backend` beside it; on
+/// Linux, an install (`install-linux.sh --light`) marked by a `zlo-light`
+/// file beside the binary and no `zlo-backend`.
 pub fn is_light_bundle(exe: &Path) -> bool {
     let Some(dir) = exe.parent() else {
         return false;
     };
+    if dir.join(LINUX_LIGHT_MARKER).is_file() {
+        return !dir.join("zlo-backend").is_file();
+    }
     let in_bundle = dir.ends_with("Contents/MacOS")
         && dir
             .parent()
@@ -156,6 +161,9 @@ pub fn is_light_bundle(exe: &Path) -> bool {
             .is_some_and(|ext| ext == "app");
     in_bundle && !dir.join("zlo-backend").is_file()
 }
+
+/// The file `install-linux.sh --light` puts beside the app's binary.
+const LINUX_LIGHT_MARKER: &str = "zlo-light";
 
 /// Start the backend unless it already runs, or the app may not run one
 /// ([`set_allowed`]). Called by every connect (`remote::sync_local_backend`).
@@ -639,6 +647,20 @@ mod tests {
         fs::create_dir_all(&not_app).unwrap();
         assert!(!is_light_bundle(&not_app.join("zlo")));
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_marked_linux_install_without_a_backend_is_light() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("zlo-light-app");
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("zlo");
+        std::fs::write(&exe, "").unwrap();
+        assert!(!is_light_bundle(&exe), "no marker: a plain binary");
+        std::fs::write(dir.join(LINUX_LIGHT_MARKER), "").unwrap();
+        assert!(is_light_bundle(&exe));
+        std::fs::write(dir.join("zlo-backend"), "").unwrap();
+        assert!(!is_light_bundle(&exe), "a backend beside it: the full app");
     }
 
     #[test]

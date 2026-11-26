@@ -17,7 +17,7 @@ pub struct Server {
 }
 
 fn lsof(args: &[&str]) -> Result<String, String> {
-    let out = Command::new("/usr/sbin/lsof")
+    let out = Command::new(crate::system::system_tool("lsof"))
         .args(args)
         .stdin(Stdio::null())
         .output()

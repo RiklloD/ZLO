@@ -232,7 +232,9 @@ fn search_key(s: &mut State, slot: &Slot, ev: &rune::KeyEvent) -> bool {
             step_thinking(s, slot, !ev.mods.shift);
             true
         }
-        Key::Command(c) if !ev.mods.ctrl && !ev.mods.alt && !ev.mods.shift => {
+        Key::Command(c)
+            if !crate::system::extra_ctrl(ev.mods) && !ev.mods.alt && !ev.mods.shift =>
+        {
             let Some(ix) = c
                 .to_digit(10)
                 .filter(|d| (1..=9).contains(d))

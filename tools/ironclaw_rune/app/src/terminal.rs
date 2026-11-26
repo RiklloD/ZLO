@@ -1,6 +1,8 @@
-//! Run a command in Terminal.app, shown first and started only on Enter.
-//! Used where the person runs something on this Mac themselves: an agent's
-//! install or sign-in (setup), `zlo triage` from the connect-failure screen.
+//! Run a command in a terminal window, shown first and started only on
+//! Enter: Terminal.app on macOS, the first terminal emulator found on Linux.
+//! Used where the person runs something on this computer themselves: an
+//! agent's install or sign-in (setup), `zlo triage` from the connect-failure
+//! screen.
 
 /// The shell line Terminal runs: show the command, wait for Enter, run it.
 pub fn script(command: &str) -> String {
@@ -11,12 +13,14 @@ pub fn script(command: &str) -> String {
 }
 
 /// AppleScript string literal of `s`.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn applescript_string(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 /// Open a Terminal window on [`script`]`(command)`. Blocking (osascript):
 /// call it off the UI thread.
+#[cfg(target_os = "macos")]
 pub fn run(command: &str) -> Result<(), String> {
     let script = format!(
         "tell application \"Terminal\"\nactivate\ndo script {}\nend tell",
@@ -32,6 +36,80 @@ pub fn run(command: &str) -> Result<(), String> {
     } else {
         Err("Could not open Terminal. Copy the command and run it yourself.".into())
     }
+}
+
+/// Terminal emulators tried in order, each with the arguments that make it
+/// run one command line: Debian's alternatives link first, then the common
+/// desktops' own terminals and the popular standalone ones.
+#[cfg(not(target_os = "macos"))]
+const TERMINALS: [(&str, &[&str]); 9] = [
+    ("x-terminal-emulator", &["-e"]),
+    ("gnome-terminal", &["--"]),
+    ("konsole", &["-e"]),
+    ("xfce4-terminal", &["-x"]),
+    ("kitty", &[]),
+    ("alacritty", &["-e"]),
+    ("ghostty", &["-e"]),
+    ("wezterm", &["start", "--"]),
+    ("xterm", &["-e"]),
+];
+
+/// Open a terminal window on [`script`]`(command)`: the first installed of
+/// [`TERMINALS`], on the login PATH. Off the UI thread, like macOS's.
+#[cfg(not(target_os = "macos"))]
+pub fn run(command: &str) -> Result<(), String> {
+    let path = &crate::system::search_path();
+    let shell = crate::system::script_shell().program;
+    let line = script(command);
+    for (name, args) in TERMINALS {
+        let Some(program) = crate::system::find_on_path(name, path) else {
+            continue;
+        };
+        let spawned = std::process::Command::new(program)
+            .args(args)
+            .args([shell, "-lc", &line])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        match spawned {
+            Ok(mut child) => {
+                std::thread::spawn(move || child.wait());
+                return Ok(());
+            }
+            Err(e) => tracing::debug!(error = %e, terminal = name, "terminal did not start"),
+        }
+    }
+    Err("No terminal app found. Copy the command and run it yourself.".into())
+}
+
+/// Open a terminal window with its shell in `folder` (Linux's "Open in →
+/// Terminal").
+#[cfg(not(target_os = "macos"))]
+pub fn open_in(folder: &std::path::Path) -> std::io::Result<()> {
+    let path = &crate::system::search_path();
+    for (name, _) in TERMINALS {
+        let Some(program) = crate::system::find_on_path(name, path) else {
+            continue;
+        };
+        match std::process::Command::new(program)
+            .current_dir(folder)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(mut child) => {
+                std::thread::spawn(move || child.wait());
+                return Ok(());
+            }
+            Err(e) => tracing::debug!(error = %e, terminal = name, "terminal did not start"),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        "no terminal app found",
+    ))
 }
 
 /// Single-quote a path for a POSIX shell when it needs it.

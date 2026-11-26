@@ -389,14 +389,16 @@ pub fn grow() -> El {
     el().grow(1.)
 }
 
-/// Hand a file or folder on this Mac to Finder: open it in its app, or reveal
-/// it. Rune's `Tx::open_url` refuses `file:` links, so this asks `open(1)`.
+/// Hand a file or folder on this computer to the system: open it in its
+/// app, or reveal it in the file manager. Rune's `Tx::open_url` refuses
+/// `file:` links, so this asks the system's opener (`crate::system`).
 pub fn open_path(path: &std::path::Path, reveal: bool) {
-    let mut cmd = std::process::Command::new("/usr/bin/open");
-    if reveal {
-        cmd.arg("-R");
-    }
-    if let Err(e) = cmd.arg(path).spawn() {
+    let opened = if reveal {
+        crate::system::reveal(path)
+    } else {
+        crate::system::open(path)
+    };
+    if let Err(e) = opened {
         tracing::warn!(error = %e, path = %path.display(), "could not hand the file to Finder");
     }
 }
