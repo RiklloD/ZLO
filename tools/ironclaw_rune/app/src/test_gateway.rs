@@ -17,6 +17,8 @@ pub struct Answer {
     pub status: u16,
     pub body: String,
     pub delay: Duration,
+    /// Close the socket without sending a response (simulates a transport error).
+    pub drop_conn: bool,
 }
 
 impl Answer {
@@ -25,6 +27,7 @@ impl Answer {
             status: 200,
             body: body.into(),
             delay: Duration::ZERO,
+            drop_conn: false,
         }
     }
 
@@ -33,6 +36,16 @@ impl Answer {
             status: 503,
             body: r#"{"error":"unavailable"}"#.into(),
             delay: Duration::ZERO,
+            drop_conn: false,
+        }
+    }
+
+    pub fn drop_connection() -> Self {
+        Answer {
+            status: 0,
+            body: String::new(),
+            delay: Duration::ZERO,
+            drop_conn: true,
         }
     }
 
@@ -99,6 +112,9 @@ impl Gateway {
                     .unwrap_or_else(Answer::fail);
                     std::thread::sleep(answer.delay);
                     shared.in_flight.fetch_sub(1, Ordering::SeqCst);
+                    if answer.drop_conn {
+                        return;
+                    }
                     let reply = format!(
                         "HTTP/1.1 {} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
                         answer.status,

@@ -10,6 +10,7 @@ use zlo_client::wire::SessionInfo;
 
 use super::*;
 use crate::jobs::harness::Pump;
+use crate::remote::connect;
 use crate::test_gateway::{Answer, Gateway};
 
 fn state() -> State {

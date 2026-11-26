@@ -53,8 +53,10 @@ pub(super) struct Resolved {
     pub(super) descriptor: Option<EnvironmentDescriptor>,
     /// The `gateway.json` computer, moved: save it, then delete the file.
     pub(super) migrated: Option<SavedEnvironment>,
-    /// The SSH tunnel the connection goes through (`tunnel::key`).
-    pub(super) tunnel: Option<String>,
+    /// The SSH tunnel lease the connection goes through (`tunnel::Lease`),
+    /// held from open until adoption or cancellation so `retain_tunnels`
+    /// cannot close it mid-handshake.
+    pub(super) tunnel: Option<super::tunnel::Lease>,
     /// Which of the computer's routes answered, in `preferred_routes` order
     /// (0 = its first). A later one starts the fail-back check.
     pub(super) route_rank: usize,
@@ -82,12 +84,19 @@ fn target(s: &State) -> Result<Target, Problem> {
             "{e}\n\nFix or delete that file, then try again. Nothing starts on this Mac until then."
         )));
     }
-    if s.remote.legacy_active
+    if s.remote.switching.is_none()
+        && s.remote.legacy_active
         && let Some(legacy) = &s.remote.legacy
     {
         return Ok(Target::Legacy(legacy.clone()));
     }
-    match &s.remote.registry.active {
+    let active = s
+        .remote
+        .switching
+        .as_ref()
+        .map(|sw| &sw.target)
+        .unwrap_or(&s.remote.registry.active);
+    match active {
         // A Light bundle has no backend of its own.
         Active::ThisMac if s.remote.app_only => Err(Problem::Blocked(NEEDS_COMPUTER.into())),
         Active::ThisMac => Ok(Target::ThisMac),
@@ -133,15 +142,17 @@ pub fn switch_to(s: &mut State, target: Active) {
         return;
     }
     let previous = s.remote.registry.active.clone();
-    s.remote.registry.active = target.clone();
-    s.remote.legacy_active = false;
     s.remote.problems.remove(&active_key(&target));
     let working = matches!(s.conn, Conn::Ready) && s.rt.backend.is_some();
     if working {
+        // Keep `registry.active` on the currently focused computer until the
+        // switch commits so background saves never persist an uncommitted pick.
         s.remote.switching = Some(Switching { target, previous });
         start(s, Mode::Switch);
     } else {
         // Nothing to keep on screen: the pick is saved now.
+        s.remote.registry.active = target;
+        s.remote.legacy_active = false;
         if let Err(e) = super::save_registry(s) {
             tracing::warn!(error = %e, "computer pick not saved");
         }
@@ -188,6 +199,8 @@ fn start(s: &mut State, mode: Mode) {
             s.remote.tag = ConnTag::default();
         }
         s.onboarding.computer = next;
+        // Reconcile peers independently of whether the focused connect succeeds.
+        super::peers::sync(s);
     }
     let Some(net) = super::net() else {
         return failed(
@@ -197,14 +210,19 @@ fn start(s: &mut State, mode: Mode) {
         );
     };
     let tokens = s.remote.tokens.clone();
-    let rt = s.rt.clone();
+    let delivery = s.rt.delivery();
     // Only a backend this app starts, its own bundled one, makes its token
     // on first start (`cargo run` on an installed CLI does not).
     let own_backend = super::runs_local_backend(s) && crate::service::provisions_token();
     net.spawn(async move {
         let resolved = resolve(target, tokens, own_backend).await;
-        rt.deliver(move |s, _| {
+        delivery.deliver(move |s, _| {
             if s.fixture || s.workspace.connect_gen != generation {
+                let had_tunnel = resolved.as_ref().is_ok_and(|r| r.tunnel.is_some());
+                drop(resolved);
+                if had_tunnel {
+                    super::retain_tunnels(s);
+                }
                 return false;
             }
             match resolved {
@@ -307,9 +325,12 @@ pub(super) fn discover_problem(e: &ClientError, own_backend: bool) -> Problem {
     }
 }
 
-/// Open (or reuse) the tunnel of an SSH route: its key and the origin the
+/// Open (or reuse) the tunnel of an SSH route: its lease and the origin the
 /// client uses through it.
-async fn open_tunnel(route: &Route, label: &str) -> Result<(String, String), Problem> {
+async fn open_tunnel(
+    route: &Route,
+    label: &str,
+) -> Result<(super::tunnel::Lease, String), Problem> {
     let target = SshTarget::from_url(&route.url).map_err(|_| {
         Problem::Blocked(format!(
             "{label}'s SSH address ({}) is not valid. Pair it again in Settings → Computers.",
@@ -317,12 +338,11 @@ async fn open_tunnel(route: &Route, label: &str) -> Result<(String, String), Pro
         ))
     })?;
     let port = route.remote_port.unwrap_or(ssh::DEFAULT_BACKEND_PORT);
-    let key = super::tunnel::key(&target, port);
     let opened = tokio::task::spawn_blocking(move || super::tunnel::open(&target, port))
         .await
         .map_err(|e| Problem::Unreachable(format!("SSH tunnel: {e}")))?;
     match opened {
-        Ok(local) => Ok((key, ssh::tunnel_origin(local))),
+        Ok((local, lease)) => Ok((lease, ssh::tunnel_origin(local))),
         Err(e) => Err(ssh_problem(e)),
     }
 }
@@ -491,9 +511,13 @@ fn open(s: &mut State, generation: Generation, mode: Mode, r: Resolved) {
     }
     let backend = match Client::new(r.conn).and_then(Backend::new) {
         Ok(b) => b,
-        Err(e) => return failed(s, mode, Problem::Blocked(e.to_string())),
+        Err(e) => {
+            drop(r.tunnel);
+            super::retain_tunnels(s);
+            return failed(s, mode, Problem::Blocked(e.to_string()));
+        }
     };
-    let rt = s.rt.clone();
+    let delivery = s.rt.delivery();
     let job = backend.spawn(|c| async move {
         let session = c.session().await?;
         let inbox = c.inbox().await?;
@@ -511,13 +535,22 @@ fn open(s: &mut State, generation: Generation, mode: Mode, r: Resolved) {
     s.remote.page.pending_backend = Some((generation, backend.clone()));
     backend.spawn(move |_| async move {
         let result = crate::jobs::flatten(job.await);
-        rt.deliver(move |s, tx| {
+        delivery.deliver(move |s, tx| {
             if s.fixture {
                 return false;
             }
             let backend = match claim_pending(s, generation) {
-                Claim::Stale => return false,
+                Claim::Stale => {
+                    let had_tunnel = tunnel.is_some();
+                    drop(tunnel);
+                    if had_tunnel {
+                        super::retain_tunnels(s);
+                    }
+                    return false;
+                }
                 Claim::Missing => {
+                    drop(tunnel);
+                    super::retain_tunnels(s);
                     failed(
                         s,
                         mode,
@@ -529,11 +562,14 @@ fn open(s: &mut State, generation: Generation, mode: Mode, r: Resolved) {
             };
             match result {
                 Ok((session, inbox)) => {
-                    s.remote.tunnel = tunnel;
+                    s.remote.tunnel = tunnel.as_ref().map(|l| l.key().to_string());
+                    drop(tunnel);
                     s.remote.route_rank = route_rank;
                     switched(s, mode, backend, computer, descriptor, session, inbox, tx);
                 }
                 Err(e) => {
+                    drop(tunnel);
+                    super::retain_tunnels(s);
                     // The launch screen giving way to the failure is the
                     // answer the person is waiting on: it crossfades (a
                     // reply lands at once otherwise). A retry that fails
@@ -627,22 +663,29 @@ pub(super) fn switched(
         descriptor = descriptor.is_some(),
         "connected"
     );
+    // Commit the pending switch target before saving routes or registry.
+    let committed_switch = if let Some(sw) = s.remote.switching.take() {
+        s.remote.registry.active = sw.target;
+        s.remote.legacy_active = false;
+        true
+    } else {
+        false
+    };
     // The routes it reports now (its private listener's tailnet
     // addresses) replace the learned ones; the person's are untouched.
-    if let (Computer::Remote(r), Some(d)) = (&computer, descriptor.as_ref())
-        && s.remote
+    let learned_routes = if let (Computer::Remote(r), Some(d)) = (&computer, descriptor.as_ref()) {
+        s.remote
             .registry
             .learn_routes(&r.environment_id, &d.addresses)
-        && let Err(e) = super::save_registry(s)
-    {
-        tracing::warn!(error = %e, "learned routes not saved");
-    }
+    } else {
+        false
+    };
     adopt(s, computer, descriptor);
     s.rt.backend = Some(backend);
     super::failback::schedule(s);
     // Keep the focused computer's tunnel and every peer's tunnel open.
     super::retain_tunnels(s);
-    if s.remote.switching.take().is_some()
+    if (committed_switch || learned_routes)
         && let Err(e) = super::save_registry(s)
     {
         tracing::warn!(error = %e, "computer pick not saved");
@@ -689,6 +732,9 @@ pub(crate) fn reset_for_switch(s: &mut State) {
     s.workspace.agents.reset_for_switch();
     s.workspace.run_clock = Default::default();
     s.workspace.confirm_delete = None;
+    s.workspace.inbox.reset_for_switch();
+    s.workspace.timers.inbox = None;
+    s.workspace.timers.wake = None;
     s.workspace.focused_unread = 0;
     s.workspace.unread = 0;
     // Warm threads belong to the computer they were fetched from; the same
@@ -714,10 +760,18 @@ fn failed(s: &mut State, mode: Mode, problem: Problem) {
     if mode == Mode::Switch
         && let Some(sw) = s.remote.switching.take()
     {
-        // The old computer stays on screen, and active.
+        // The old computer stays on screen, and active (`registry.active` was
+        // never mutated to `sw.target`).
         let key = active_key(&sw.target);
         s.remote.registry.active = sw.previous;
         s.workspace.carried_draft = None;
+        if s.remote
+            .pending_thread
+            .as_ref()
+            .is_some_and(|p| p.computer == key)
+        {
+            s.remote.pending_thread = None;
+        }
         let line = match &problem {
             Problem::Unreachable(m) | Problem::Blocked(m) => m.clone(),
         };
@@ -736,6 +790,7 @@ fn failed(s: &mut State, mode: Mode, problem: Problem) {
             .insert(r.environment_id.clone(), m.clone());
     }
     crate::workspace::connect_failed(s, problem);
+    super::peers::sync(s);
 }
 
 /// Move a `gateway.json` computer that is not the one in use into the

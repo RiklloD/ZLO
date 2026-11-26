@@ -75,6 +75,13 @@ pub fn is_running() -> bool {
     supervisor().running.load(Ordering::SeqCst)
 }
 
+/// Tests: simulate whether this app is currently supervising a local backend
+/// (hold [`TEST_LOCK`] around calls).
+#[cfg(test)]
+pub fn set_managed_for_test(running: bool) {
+    supervisor().running.store(running, Ordering::SeqCst);
+}
+
 struct Paths {
     backend: PathBuf,
     home: PathBuf,
@@ -266,16 +273,20 @@ pub fn stop_on_terminate() {
 pub fn stop_on_terminate() {}
 
 /// Stop the backend this app started (never another one). Quit, and
-/// turning "Run IronClaw on this Mac" off.
-pub fn stop() {
+/// turning "Run IronClaw on this Mac" off. Returns `true` when this app was
+/// managing a local backend process.
+pub fn stop() -> bool {
     let sup = supervisor();
+    let was_running = sup.running.swap(false, Ordering::SeqCst);
+    let pid = backend_pid();
     sup.stopping.store(true, Ordering::SeqCst);
     sup.restarting.store(false, Ordering::SeqCst);
     new_lifecycle();
     clear_startup_failure();
-    if let Some(pid) = backend_pid() {
+    if let Some(pid) = pid {
         terminate(pid);
     }
+    was_running || pid.is_some()
 }
 
 /// The backend this app runs, while it runs.

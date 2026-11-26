@@ -8,7 +8,7 @@ use rune::Tx;
 use zlo_client::environments::THIS_MAC;
 use zlo_client::{Backend, Client, ClientError};
 
-use super::{POLL, PeerConn, peer_needs_poll};
+use super::{PeerConn, peer_needs_poll, peer_poll_period, prune_sent};
 use crate::jobs::Generation;
 use crate::onboarding::gateway::Computer;
 use crate::remote::connect::{self, Problem, Resolved, Target};
@@ -58,10 +58,10 @@ pub(super) fn connect_peer(s: &mut State, key: &str) {
     peer.computer_readiness_probed = false;
     let key_owned = key.to_string();
     let tokens = s.remote.tokens.clone();
-    let rt = s.rt.clone();
+    let delivery = s.rt.delivery();
     net.spawn(async move {
         let resolved = connect::resolve(target, tokens, own_backend).await;
-        rt.deliver(move |s, tx| {
+        delivery.deliver(move |s, tx| {
             if s.fixture
                 || !s
                     .remote
@@ -69,9 +69,9 @@ pub(super) fn connect_peer(s: &mut State, key: &str) {
                     .get(&key_owned)
                     .is_some_and(|p| p.generation == generation)
             {
-                if let Ok(r) = &resolved
-                    && r.tunnel.is_some()
-                {
+                let had_tunnel = resolved.as_ref().is_ok_and(|r| r.tunnel.is_some());
+                drop(resolved);
+                if had_tunnel {
                     crate::remote::retain_tunnels(s);
                 }
                 return false;
@@ -88,14 +88,21 @@ pub(super) fn connect_peer(s: &mut State, key: &str) {
 fn open_peer(s: &mut State, key: &str, generation: Generation, r: Resolved, tx: &mut Tx) {
     let backend = match Client::new(r.conn).and_then(Backend::new) {
         Ok(b) => b,
-        Err(e) => return peer_failed(s, key, Problem::Blocked(e.to_string()), tx),
+        Err(e) => {
+            drop(r.tunnel);
+            peer_failed(s, key, Problem::Blocked(e.to_string()), tx);
+            crate::remote::retain_tunnels(s);
+            return;
+        }
     };
     let Some(peer) = s.remote.peers.get_mut(key) else {
+        drop(r.tunnel);
+        crate::remote::retain_tunnels(s);
         return;
     };
     peer.pending_backend = Some(backend.clone());
     let key_owned = key.to_string();
-    let rt = s.rt.clone();
+    let delivery = s.rt.delivery();
     let computer = r.computer;
     let descriptor = r.descriptor;
     let tunnel = r.tunnel;
@@ -114,7 +121,7 @@ fn open_peer(s: &mut State, key: &str, generation: Generation, r: Resolved, tx: 
     });
     backend.spawn(move |_| async move {
         let result = crate::jobs::flatten(job.await);
-        rt.deliver(move |s, tx| {
+        delivery.deliver(move |s, tx| {
             if s.fixture
                 || !s
                     .remote
@@ -122,7 +129,9 @@ fn open_peer(s: &mut State, key: &str, generation: Generation, r: Resolved, tx: 
                     .get(&key_owned)
                     .is_some_and(|p| p.generation == generation)
             {
-                if tunnel.is_some() {
+                let had_tunnel = tunnel.is_some();
+                drop(tunnel);
+                if had_tunnel {
                     crate::remote::retain_tunnels(s);
                 }
                 return false;
@@ -133,6 +142,11 @@ fn open_peer(s: &mut State, key: &str, generation: Generation, r: Resolved, tx: 
                 .get_mut(&key_owned)
                 .and_then(|p| p.pending_backend.take())
             else {
+                let had_tunnel = tunnel.is_some();
+                drop(tunnel);
+                if had_tunnel {
+                    crate::remote::retain_tunnels(s);
+                }
                 return false;
             };
             match result {
@@ -146,7 +160,10 @@ fn open_peer(s: &mut State, key: &str, generation: Generation, r: Resolved, tx: 
                         tracing::warn!(error = %e, "learned routes not saved");
                     }
                     let arm_poll = s.workspace.window_active && !crate::design::look::saving(s);
+                    let now = Instant::now();
+                    let mut wake_at = None;
                     if let Some(peer) = s.remote.peers.get_mut(&key_owned) {
+                        prune_sent(&mut peer.sent, &inbox);
                         peer.computer = computer;
                         peer.conn = PeerConn::Ready;
                         peer.session = Some(session);
@@ -154,24 +171,30 @@ fn open_peer(s: &mut State, key: &str, generation: Generation, r: Resolved, tx: 
                         peer.notifications = notifications;
                         peer.backend = Some(backend);
                         peer.descriptor = descriptor;
-                        peer.tunnel = tunnel;
+                        peer.tunnel = tunnel.as_ref().map(|l| l.key().to_string());
                         peer.route_rank = route_rank;
                         peer.retry_attempt = 0;
                         peer.retry_at = None;
                         peer.loading = false;
                         peer.stale = false;
                         if arm_poll && peer_needs_poll(peer) {
-                            peer.poll_at = Some(Instant::now() + POLL);
-                            tx.wake_after(POLL);
+                            let at = now + peer_poll_period(peer);
+                            peer.poll_at = Some(at);
+                            wake_at = Some(at);
                         } else {
                             peer.poll_at = None;
                         }
+                    }
+                    drop(tunnel);
+                    if let Some(at) = wake_at {
+                        s.remote.peers.request_wake(at, now, tx);
                     }
                     tracing::debug!(computer = %key_owned, "peer connected");
                     crate::remote::retain_tunnels(s);
                     crate::workspace::peer_notifications_landed(s, &key_owned);
                 }
                 Err(e) => {
+                    drop(tunnel);
                     let problem = connect::problem_of(&computer, &e);
                     peer_failed(s, &key_owned, problem, tx);
                     crate::remote::retain_tunnels(s);
@@ -185,6 +208,8 @@ fn open_peer(s: &mut State, key: &str, generation: Generation, r: Resolved, tx: 
 fn peer_failed(s: &mut State, key: &str, problem: Problem, tx: &mut Tx) {
     let is_asleep = crate::remote::asleep(s, key);
     let can_wake = s.workspace.window_active && !crate::design::look::saving(s);
+    let now = Instant::now();
+    let mut wake_at = None;
     let Some(peer) = s.remote.peers.get_mut(key) else {
         return;
     };
@@ -203,25 +228,29 @@ fn peer_failed(s: &mut State, key: &str, problem: Problem, tx: &mut Tx) {
                 tracing::debug!(computer = %key, "peer asleep");
                 peer.conn = PeerConn::Asleep;
                 peer.retry_at = None;
-                return;
-            }
-            let secs = RETRY_BACKOFF[peer.retry_attempt.min(RETRY_BACKOFF.len() - 1)];
-            tracing::debug!(
-                computer = %key,
-                error = %reason,
-                attempt = peer.retry_attempt,
-                retry_in_secs = secs,
-                "peer unreachable; retrying"
-            );
-            peer.conn = PeerConn::Connecting;
-            peer.retry_attempt += 1;
-            let delay = Duration::from_secs(secs);
-            peer.retry_at = Some(Instant::now() + delay);
-            if can_wake {
-                tx.wake_after(delay);
+            } else {
+                let secs = RETRY_BACKOFF[peer.retry_attempt.min(RETRY_BACKOFF.len() - 1)];
+                tracing::debug!(
+                    computer = %key,
+                    error = %reason,
+                    attempt = peer.retry_attempt,
+                    retry_in_secs = secs,
+                    "peer unreachable; retrying"
+                );
+                peer.conn = PeerConn::Connecting;
+                peer.retry_attempt += 1;
+                let at = now + Duration::from_secs(secs);
+                peer.retry_at = Some(at);
+                if can_wake {
+                    wake_at = Some(at);
+                }
             }
         }
     }
+    if let Some(at) = wake_at {
+        s.remote.peers.request_wake(at, now, tx);
+    }
+    crate::workspace::sync_unread(s);
 }
 
 pub(super) fn refresh_peer(s: &mut State, key: &str) {
@@ -244,7 +273,7 @@ pub(super) fn refresh_peer(s: &mut State, key: &str) {
         return;
     };
     let key_owned = key.to_string();
-    let rt = s.rt.clone();
+    let delivery = s.rt.delivery();
     let job = backend.spawn(|c| async move {
         let inbox = c.inbox().await?;
         let notifications = match c.list_notifications(ALERT_PAGE).await {
@@ -258,12 +287,14 @@ pub(super) fn refresh_peer(s: &mut State, key: &str) {
     });
     backend.spawn(move |_| async move {
         let result = crate::jobs::flatten(job.await);
-        rt.deliver(move |s, tx| {
+        delivery.deliver(move |s, tx| {
             crate::energy::hit(crate::energy::C::UpdateJob);
             if s.fixture {
                 return false;
             }
             let arm_poll = s.workspace.window_active && !crate::design::look::saving(s);
+            let now = Instant::now();
+            let mut wake_at = None;
             let Some(peer) = s.remote.peers.get_mut(&key_owned) else {
                 return false;
             };
@@ -274,21 +305,28 @@ pub(super) fn refresh_peer(s: &mut State, key: &str) {
             let again = std::mem::take(&mut peer.stale);
             match result {
                 Ok((inbox, notifications)) => {
+                    prune_sent(&mut peer.sent, &inbox);
                     peer.inbox = Some(inbox);
                     if let Some(notifications) = notifications {
                         peer.notifications = notifications;
                     }
                     if arm_poll && peer_needs_poll(peer) {
-                        if peer.poll_at.is_none() {
-                            peer.poll_at = Some(Instant::now() + POLL);
-                            tx.wake_after(POLL);
+                        let period = peer_poll_period(peer);
+                        let target = now + period;
+                        let needs_update = peer.poll_at.is_none_or(|at| at > target);
+                        if needs_update {
+                            peer.poll_at = Some(target);
+                            wake_at = Some(target);
                         }
                     } else {
                         peer.poll_at = None;
                     }
+                    if let Some(at) = wake_at {
+                        s.remote.peers.request_wake(at, now, tx);
+                    }
                     crate::workspace::peer_notifications_landed(s, &key_owned);
                 }
-                Err(e) if e.is_unauthorized() => {
+                Err(e) if e.is_unauthorized() || matches!(e, ClientError::Network(_)) => {
                     let problem = connect::problem_of(&peer.computer, &e);
                     peer_failed(s, &key_owned, problem, tx);
                     crate::remote::retain_tunnels(s);

@@ -84,6 +84,10 @@ pub struct RemoteState {
     pub problems: HashMap<String, String>,
     /// The thread last open per computer key, reopened on switching back.
     pub last_thread: HashMap<String, String>,
+    /// Explicit intent to open a specific thread on a specific computer once
+    /// focus lands there (`peers::focus_thread`). Takes precedence over the
+    /// draft default computer and `last_thread`, even when absent from inbox.
+    pub pending_thread: Option<PendingThread>,
     /// A switch in flight: the old screen stays until the new one answers.
     pub switching: Option<Switching>,
     pub page: pairing::PageState,
@@ -102,6 +106,16 @@ pub struct RemoteState {
     pub peers: peers::Peers,
     /// Cached computer-use readiness of the focused backend, when last queried.
     pub focused_computer_readiness: Option<zlo_client::computer_use::ComputerUseReadiness>,
+    /// Tests: injectable path for `save_registry` (so tests write to a temp dir
+    /// instead of skipping the write or touching the real settings folder).
+    #[cfg(test)]
+    pub registry_path: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingThread {
+    pub computer: String,
+    pub thread_id: String,
 }
 
 #[derive(Clone, Debug)]
@@ -122,6 +136,7 @@ impl Default for RemoteState {
             descriptor: None,
             problems: HashMap::new(),
             last_thread: HashMap::new(),
+            pending_thread: None,
             switching: None,
             page: Default::default(),
             tunnel: None,
@@ -131,6 +146,8 @@ impl Default for RemoteState {
             linked: Default::default(),
             peers: Default::default(),
             focused_computer_readiness: None,
+            #[cfg(test)]
+            registry_path: None,
         }
     }
 }
@@ -295,9 +312,14 @@ pub fn sync_local_backend(s: &State) {
 
 /// Write the registry (small; on the UI thread, so writes stay ordered).
 pub fn save_registry(s: &mut State) -> Result<(), String> {
-    if s.fixture || cfg!(test) {
+    if s.fixture {
         return Ok(());
     }
+    #[cfg(test)]
+    let Some(path) = s.remote.registry_path.clone() else {
+        return Ok(());
+    };
+    #[cfg(not(test))]
     let path = registry_path().ok_or("No settings folder on this Mac.")?;
     let bytes = s.remote.registry.to_json().map_err(|e| e.to_string())?;
     crate::persist::atomic_write(&path, &bytes).map_err(|e| {
@@ -325,6 +347,7 @@ pub fn use_this_mac(s: &mut State) {
     s.remote.legacy_active = false;
     s.remote.registry.active = Active::ThisMac;
     s.remote.switching = None;
+    s.remote.pending_thread = None;
     if let Err(e) = save_registry(s) {
         tracing::warn!(error = %e, "computer pick not saved");
     }

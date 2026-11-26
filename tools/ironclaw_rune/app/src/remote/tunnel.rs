@@ -9,10 +9,11 @@
 //! `wait` on it; [`close`] signals it by pid. The local port stays the
 //! same across restarts, so the open connection's address stays valid.
 
+use std::collections::HashMap;
 use std::io::Read;
 use std::process::{Child, Command};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use zlo_client::ssh::{self, SshError, SshTarget};
@@ -28,31 +29,82 @@ struct Open {
     pid: Arc<AtomicU32>,
 }
 
-static TUNNELS: Mutex<Vec<Open>> = Mutex::new(Vec::new());
+#[derive(Default)]
+struct TunnelTable {
+    tunnels: Vec<Open>,
+    /// Active in-flight leases keyed by tunnel key: while > 0, `retain_many`
+    /// keeps the tunnel open so another connection landing cannot close it.
+    leases: HashMap<String, usize>,
+}
+
+static TUNNELS: LazyLock<Mutex<TunnelTable>> = LazyLock::new(|| Mutex::new(TunnelTable::default()));
 /// Opens one at a time (an open blocks while `ssh` connects; [`close`]
 /// never waits for it).
 static OPENING: Mutex<()> = Mutex::new(());
+
+/// Holds an SSH tunnel open while a connection or pairing attempt is in
+/// flight. Dropping the lease releases the hold so subsequent `retain_many`
+/// calls can close it if nothing adopted it.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Lease {
+    key: String,
+}
+
+impl Lease {
+    #[cfg(test)]
+    pub(crate) fn acquire(key: impl Into<String>) -> Self {
+        let key = key.into();
+        let mut table = TUNNELS.lock().unwrap_or_else(|e| e.into_inner());
+        *table.leases.entry(key.clone()).or_insert(0) += 1;
+        Self { key }
+    }
+
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+}
+
+impl Drop for Lease {
+    fn drop(&mut self) {
+        let mut table = TUNNELS.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(count) = table.leases.get_mut(&self.key) {
+            *count -= 1;
+            if *count == 0 {
+                table.leases.remove(&self.key);
+            }
+        }
+    }
+}
 
 /// Which tunnel: the SSH target and the backend port it forwards to.
 pub fn key(target: &SshTarget, remote_port: u16) -> String {
     format!("{} -> {remote_port}", target.to_url())
 }
 
-/// The local port of a tunnel to `target`'s `remote_port`: the open one,
-/// or a new one once it listens. Blocking (up to
+/// The local port of a tunnel to `target`'s `remote_port` plus a [`Lease`]
+/// that keeps it alive until the caller adopts or cancels it. Blocking (up to
 /// [`ssh::TUNNEL_READY_TIMEOUT`]): call it off the UI thread.
-pub fn open(target: &SshTarget, remote_port: u16) -> Result<u16, SshError> {
+pub fn open(target: &SshTarget, remote_port: u16) -> Result<(u16, Lease), SshError> {
     // Unit tests never run a real ssh.
     if cfg!(test) {
         return Err(SshError::TunnelFailed(target.host.clone()));
     }
     let _opening = OPENING.lock().unwrap_or_else(|e| e.into_inner());
     let key = key(target, remote_port);
-    if let Some(port) = current_port(&key) {
-        return Ok(port);
+    {
+        let mut table = TUNNELS.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(port) = table
+            .tunnels
+            .iter()
+            .find(|o| o.key == key && !o.stop.load(Ordering::SeqCst))
+            .map(|o| o.local_port)
+        {
+            *table.leases.entry(key.clone()).or_insert(0) += 1;
+            return Ok((port, Lease { key }));
+        }
+        // A stopped tunnel under this key goes; others (the one in use) stay.
+        table.tunnels.retain(|o| o.key != key);
     }
-    // A stopped tunnel under this key goes; others (the one in use) stay.
-    drop_stopped(&key);
     let local_port =
         ssh::free_local_port().map_err(|_| SshError::TunnelFailed(target.host.clone()))?;
     let mut child = ssh::spawn_tunnel(target, local_port, remote_port)
@@ -79,31 +131,25 @@ pub fn open(target: &SshTarget, remote_port: u16) -> Result<u16, SshError> {
         terminate(pid.load(Ordering::SeqCst));
         return Err(SshError::TunnelFailed(target.host.clone()));
     }
-    TUNNELS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .push(Open {
-            key,
-            local_port,
-            stop,
-            pid,
-        });
-    Ok(local_port)
+    let mut table = TUNNELS.lock().unwrap_or_else(|e| e.into_inner());
+    table.tunnels.push(Open {
+        key: key.clone(),
+        local_port,
+        stop,
+        pid,
+    });
+    *table.leases.entry(key.clone()).or_insert(0) += 1;
+    Ok((local_port, Lease { key }))
 }
 
+#[cfg(test)]
 fn current_port(key: &str) -> Option<u16> {
     let guard = TUNNELS.lock().unwrap_or_else(|e| e.into_inner());
     guard
+        .tunnels
         .iter()
         .find(|o| o.key == key && !o.stop.load(Ordering::SeqCst))
         .map(|o| o.local_port)
-}
-
-fn drop_stopped(key: &str) {
-    TUNNELS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .retain(|o| o.key != key);
 }
 
 fn stop(open: &Open) {
@@ -112,20 +158,25 @@ fn stop(open: &Open) {
     tracing::debug!(tunnel = %open.key, "ssh tunnel closed");
 }
 
-/// Stop every tunnel (quitting). Never waits.
+/// Stop every tunnel unconditionally (quitting). Never waits.
 pub fn close() {
-    retain_many(&[]);
+    let gone: Vec<Open> = {
+        let mut table = TUNNELS.lock().unwrap_or_else(|e| e.into_inner());
+        std::mem::take(&mut table.tunnels)
+    };
+    gone.iter().for_each(stop);
 }
 
 /// Keep every tunnel whose key is in `keep` (the focused computer's and
-/// each peer's) and close all others.
+/// each peer's) or held by an active [`Lease`], and close all others.
 pub fn retain_many(keep: &[&str]) {
     let gone: Vec<Open> = {
-        let mut tunnels = TUNNELS.lock().unwrap_or_else(|e| e.into_inner());
-        let (kept, gone) = std::mem::take(&mut *tunnels)
-            .into_iter()
-            .partition(|o| keep.contains(&o.key.as_str()));
-        *tunnels = kept;
+        let mut table = TUNNELS.lock().unwrap_or_else(|e| e.into_inner());
+        let tunnels = std::mem::take(&mut table.tunnels);
+        let (kept, gone) = tunnels.into_iter().partition(|o| {
+            keep.contains(&o.key.as_str()) || table.leases.get(&o.key).copied().unwrap_or(0) > 0
+        });
+        table.tunnels = kept;
         gone
     };
     gone.iter().for_each(stop);
@@ -245,6 +296,7 @@ mod tests {
         TUNNELS
             .lock()
             .unwrap_or_else(|e| e.into_inner())
+            .tunnels
             .extend([fake("a", 40001), fake("b", 40002)]);
         assert_eq!(current_port("a"), Some(40001));
         // B failed: the switch path keeps A's tunnel, and only A's.
@@ -259,11 +311,11 @@ mod tests {
     #[test]
     fn retain_many_keeps_focused_and_peer_tunnels_together() {
         let _serial = OPENING.lock().unwrap_or_else(|e| e.into_inner());
-        TUNNELS.lock().unwrap_or_else(|e| e.into_inner()).extend([
-            fake("a", 40001),
-            fake("b", 40002),
-            fake("c", 40003),
-        ]);
+        TUNNELS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .tunnels
+            .extend([fake("a", 40001), fake("b", 40002), fake("c", 40003)]);
         retain_many(&["a", "b"]);
         assert_eq!(current_port("a"), Some(40001));
         assert_eq!(current_port("b"), Some(40002));
@@ -273,5 +325,36 @@ mod tests {
         assert_eq!(current_port("b"), Some(40002));
         close();
         assert_eq!(current_port("b"), None);
+    }
+
+    /// P2-D: an in-flight connection/pairing lease protects its tunnel from
+    /// concurrent `retain_many` calls until dropped, while `close()` (quit)
+    /// still closes everything.
+    #[test]
+    fn tunnel_lease_protects_in_flight_tunnel_from_retain_many() {
+        let _serial = OPENING.lock().unwrap_or_else(|e| e.into_inner());
+        TUNNELS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .tunnels
+            .extend([fake("a", 40001), fake("b", 40002)]);
+        let lease_b = Lease::acquire("b");
+        retain_many(&["a"]);
+        assert_eq!(current_port("a"), Some(40001));
+        assert_eq!(
+            current_port("b"),
+            Some(40002),
+            "leased in-flight tunnel must survive retain_many"
+        );
+        drop(lease_b);
+        retain_many(&["a"]);
+        assert_eq!(
+            current_port("b"),
+            None,
+            "unleased tunnel closes on retain_many"
+        );
+        let _lease_a = Lease::acquire("a");
+        close();
+        assert_eq!(current_port("a"), None, "quit closes even leased tunnels");
     }
 }

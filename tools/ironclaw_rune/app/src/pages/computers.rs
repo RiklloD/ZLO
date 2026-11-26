@@ -34,9 +34,15 @@ pub fn opened(s: &mut State) {
 fn refresh(s: &mut State) {
     let scanning = s.remote.page.discovering;
     pairing::opened(s);
+    remote::peers::wake_asleep(s);
     if !scanning && s.remote.page.discovering {
         s.remote.page.scan_shown = true;
     }
+}
+
+#[cfg(test)]
+pub(crate) fn refresh_for_test(s: &mut State) {
+    refresh(s);
 }
 
 pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
