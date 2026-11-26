@@ -137,7 +137,7 @@ fn client() -> TriageClient {
 /// ⌘K → "Triage an issue": open the draft now (its hero says what is
 /// happening) and fill it when the backend answers.
 pub(super) fn start(s: &mut State) {
-    draft::start_in_profile(s, zlo_client::profiles::DEFAULT_PROFILE_ID.into());
+    draft::start_on_default_computer(s, zlo_client::profiles::DEFAULT_PROFILE_ID.into());
     let Some(generation) = s.workspace.draft.as_ref().map(|d| d.generation) else {
         return;
     };

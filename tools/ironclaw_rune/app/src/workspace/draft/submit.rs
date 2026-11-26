@@ -168,6 +168,7 @@ pub(super) fn submit(s: &mut State, sub: Submission, voice: Option<crate::voice:
                 // asks for motion.
                 tx.animated();
                 settle(s, &sub, None);
+                s.workspace.started = Some((id.clone(), sub.profile.clone()));
                 inbox::refresh_shown(s);
                 crate::workspace::open_thread(s, id.clone());
                 if crate::workspace::active_id(s) == Some(id.as_str()) {

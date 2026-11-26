@@ -219,24 +219,28 @@ fn load_catalog(s: &mut State) {
     );
 }
 
-/// Open the editor on a blank profile (the inbox's New profile button).
-pub fn new_profile(s: &mut State) {
-    select(s, None);
+/// Every profile id Settings knows (archived ones it lists included).
+pub fn known_ids(s: &State) -> Vec<String> {
+    s.pages
+        .profiles
+        .items
+        .iter()
+        .map(|p| p.profile_id.clone())
+        .collect()
 }
 
-/// Name the blank profile the editor just opened on (the profile menu's
-/// "New profile “name”").
-pub fn name_new_profile(s: &mut State, name: &str) {
+/// A profile made outside the editor (the pickers' "Add profile") joins
+/// Settings' list.
+pub fn remember_saved(s: &mut State, saved: &ProfileInfo) {
     let ps = &mut s.pages.profiles;
-    if ps.open && ps.selected.is_none() {
-        ps.name.replace_text(name);
+    if !ps.items.iter().any(|p| p.profile_id == saved.profile_id) {
+        ps.items.insert(0, saved.clone());
     }
 }
 
-/// The display name in the editor.
-#[cfg(test)]
-pub fn new_profile_name(s: &State) -> &str {
-    &s.pages.profiles.name.text
+/// Open the editor on a blank profile (the inbox's New profile button).
+pub fn new_profile(s: &mut State) {
+    select(s, None);
 }
 
 fn select(s: &mut State, id: Option<String>) {

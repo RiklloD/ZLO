@@ -274,6 +274,27 @@ impl Store {
         id: &ProfileId,
         settings: &ProfileSettings,
     ) -> Result<ProfileRecord> {
+        self.insert_profile(owner, id, settings, true).await
+    }
+
+    /// Create a profile whose id no profile has ever had: an archived one
+    /// is a conflict too, so it never comes back with these settings.
+    pub async fn create_new_profile(
+        &self,
+        owner: &ProfileOwner,
+        id: &ProfileId,
+        settings: &ProfileSettings,
+    ) -> Result<ProfileRecord> {
+        self.insert_profile(owner, id, settings, false).await
+    }
+
+    async fn insert_profile(
+        &self,
+        owner: &ProfileOwner,
+        id: &ProfileId,
+        settings: &ProfileSettings,
+        revive_archived: bool,
+    ) -> Result<ProfileRecord> {
         validate_settings(settings)?;
         let now = now_ms();
         let mut params = owner_params(owner);
@@ -282,17 +303,20 @@ impl Store {
             s(serde_json::to_string(settings)?),
             now.into(),
         ]);
-        let written = self
-            .exec(
-                "INSERT INTO orch_profiles \
-                 (tenant_id, user_id, profile_id, settings, created_at, updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?5) \
-                 ON CONFLICT (tenant_id, user_id, profile_id) DO UPDATE SET \
-                 settings = excluded.settings, updated_at = excluded.updated_at, archived_at = NULL \
-                 WHERE orch_profiles.archived_at IS NOT NULL",
-                params,
-            )
-            .await?;
+        let sql = if revive_archived {
+            "INSERT INTO orch_profiles \
+             (tenant_id, user_id, profile_id, settings, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5) \
+             ON CONFLICT (tenant_id, user_id, profile_id) DO UPDATE SET \
+             settings = excluded.settings, updated_at = excluded.updated_at, archived_at = NULL \
+             WHERE orch_profiles.archived_at IS NOT NULL"
+        } else {
+            "INSERT INTO orch_profiles \
+             (tenant_id, user_id, profile_id, settings, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5) \
+             ON CONFLICT (tenant_id, user_id, profile_id) DO NOTHING"
+        };
+        let written = self.exec(sql, params).await?;
         if written == 0 {
             return Err(OrchestratorError::request(
                 "profile_exists",

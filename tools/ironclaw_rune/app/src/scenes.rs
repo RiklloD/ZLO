@@ -268,6 +268,7 @@ pub const SCENES: &[Scene] = &[
     ("profile-editor", profile_editor),
     ("profile-menu", ws::fixture_profile_menu),
     ("profile-menu-search", ws::fixture_profile_menu_search),
+    ("profile-combobox", ws::fixture_profile_combobox),
     ("profile-pickers", profile_pickers),
     ("profiles", profiles),
     ("projects", |s| {

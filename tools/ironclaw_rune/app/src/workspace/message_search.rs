@@ -108,10 +108,12 @@ fn normalized(query: &str) -> String {
 
 /// Whether an open search surface (⌘K, the inbox field) shows `query`.
 fn query_wanted(s: &State, query: &str) -> bool {
+    // "New thread in…" lists profiles: its field is no history search.
     let palette = s
         .workspace
         .command
         .as_ref()
+        .filter(|menu| menu.mode == super::command::Mode::Root)
         .map(|menu| normalized(&menu.input.text));
     let inbox = normalized(&s.workspace.inbox.search.text);
     palette.as_deref() == Some(query) || inbox == query

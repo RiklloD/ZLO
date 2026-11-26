@@ -126,6 +126,10 @@ pub struct Prefs {
     /// Computers that do not receive This Mac's configuration (Settings →
     /// Computers); every other paired computer does.
     pub config_sync_off: Vec<String>,
+    /// Profiles pinned in the new-thread pickers, in pin order (t3code's
+    /// pinned projects), as `computer/profile_id`: they follow the current
+    /// profile at the top.
+    pub pinned_profiles: Vec<String>,
 }
 
 impl Default for Prefs {
@@ -167,6 +171,7 @@ impl Default for Prefs {
             signal_matrix_picker: false,
             default_computer: None,
             config_sync_off: Vec::new(),
+            pinned_profiles: Vec::new(),
         }
     }
 }

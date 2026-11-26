@@ -49,6 +49,21 @@ pub async fn profile_create(
     ))
 }
 
+/// `POST /api/webchat/v2/profiles/create/fresh` — body:
+/// [`ProfileWriteRequest`]. Creates only under an id no profile has had: an
+/// archived profile's id answers `profile_exists` instead of coming back
+/// with these settings (the app's "Add profile", which names ids itself).
+pub async fn profile_create_fresh(
+    State(state): State<WebUiV2State>,
+    Extension(caller): Extension<ProductSurfaceCaller>,
+    Json(mut body): Json<ProfileWriteRequest>,
+) -> Result<Json<Value>, WebUiV2HttpError> {
+    body.fresh = true;
+    Ok(Json(
+        invoke_product_command(state.services(), caller, PROFILE_CREATE_COMMAND, body).await?,
+    ))
+}
+
 /// `POST /api/webchat/v2/profiles/{profile_id}` — body: [`ProfileSettings`].
 pub async fn profile_update(
     State(state): State<WebUiV2State>,
@@ -59,6 +74,7 @@ pub async fn profile_update(
     let request = ProfileWriteRequest {
         profile_id,
         settings,
+        fresh: false,
     };
     Ok(Json(
         invoke_product_command(state.services(), caller, PROFILE_UPDATE_COMMAND, request).await?,

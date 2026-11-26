@@ -20,32 +20,13 @@ pub(in crate::workspace) mod list;
 mod rows;
 
 pub(in crate::workspace) use rows::{
-    branch_label, draft_mark, profile_color, profile_mark, pulse_dots, status_label,
+    branch_label, draft_mark, profile_color, profile_mark, status_label,
 };
 
 /// The sidebar's thread list with its header. `layer` takes the profile
 /// menu, which floats over the list so no row moves.
-pub fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
+pub fn view(s: &State, _cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) -> El {
     let inbox = &s.workspace.inbox;
-    if inbox.new_menu_open {
-        // Under the header, as wide as the list: it covers rows, never the
-        // chat beside them.
-        let width = cx
-            .window_layout_with("inbox-header", |r| r[2])
-            .map_or(picker::WIDTH, |w| (w - 16.).max(picker::MIN_WIDTH));
-        layer.push(picker::anchored(
-            k,
-            col()
-                .w(width)
-                .min_h(0.0)
-                .modal(true, |s: &mut State| {
-                    picker::close(s);
-                })
-                .child(picker::profile_picker(s, k)),
-            "inbox-header",
-            0.,
-        ));
-    }
     rows::snooze_menu(s, k, layer);
     let mut column = col()
         .key("inbox")
@@ -99,17 +80,27 @@ fn header(s: &State, k: &Kit) -> El {
         .child(
             selected_bg(
                 &s.palette,
-                inbox.new_menu_open,
-                ui::ghost_icon(
-                    k,
-                    &icons::SQUARE_PEN,
-                    "New thread",
-                    ControlSize::Large,
-                    picker::toggle_new_menu,
-                ),
+                crate::workspace::command::is_new_thread_in(s),
+                new_thread_button(k),
             )
             .key("new-thread"),
         )
+}
+
+/// t3code's New thread: straight into the current profile when there is
+/// nothing to choose, else ⌘K on "New thread in…"; Shift-click always
+/// starts in the current profile.
+fn new_thread_button(k: &Kit) -> El {
+    rune_kit::IconButton::new(&icons::SQUARE_PEN)
+        .variant(rune_kit::IconButtonVariant::Ghost)
+        .control_size(ControlSize::Large)
+        .label("New thread")
+        .help("New thread (⌘N)\nShift-click: in the current profile (⇧⌘N)")
+        .on_press_tx(|s: &mut State, tx: &mut rune::Tx| {
+            tx.animated();
+            picker::new_thread(s, tx.mods().shift);
+        })
+        .build(k)
 }
 
 /// A ghost button shown pressed.

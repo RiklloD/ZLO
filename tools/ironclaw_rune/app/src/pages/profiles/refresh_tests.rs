@@ -37,6 +37,7 @@ fn picked(id: &str, name: &str, used: Option<i64>) -> InboxProfile {
         display_name: name.into(),
         git_branch: None,
         last_used_at: used,
+        folder: None,
     }
 }
 

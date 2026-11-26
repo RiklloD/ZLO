@@ -47,6 +47,19 @@ impl ClientError {
         matches!(self, Self::NoToken(_))
     }
 
+    /// The server's error code (`profile_exists`, …), when it sent one.
+    pub fn code(&self) -> Option<&str> {
+        match self {
+            Self::Refused { code, .. } => Some(code),
+            Self::Api { body, .. } => body
+                .validation_code
+                .as_deref()
+                .or(body.kind.as_deref())
+                .or(body.error.as_deref()),
+            _ => None,
+        }
+    }
+
     pub fn is_unauthorized(&self) -> bool {
         matches!(self, Self::Api { status: 401, .. })
     }

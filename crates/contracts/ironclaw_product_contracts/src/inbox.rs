@@ -108,6 +108,10 @@ pub struct InboxProfile {
     pub git_branch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_used_at: Option<i64>,
+    /// The folder the profile's threads work in (its own, or the default
+    /// one), for the picker's location line. Absent from older servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

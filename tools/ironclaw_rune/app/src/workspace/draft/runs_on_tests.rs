@@ -128,6 +128,7 @@ fn parsed_inbox(thread_id: &str, title: &str, profiles: &[(&str, &str)]) -> Inbo
             display_name: (*name).into(),
             git_branch: None,
             last_used_at: None,
+            folder: None,
         })
         .collect();
     list.last_used_profile_id = profiles.first().map(|(id, _)| (*id).into());
@@ -377,6 +378,37 @@ fn default_computer_pref_applied_when_ready_and_skipped_when_unavailable() {
             .as_ref()
             .is_some_and(|d| d.computer_note.is_none())
     );
+}
+
+/// A profile picked from the focused computer's list starts there, even
+/// when new threads default to another computer: the pick names that
+/// computer's profile. The new-thread button with nothing picked yet goes
+/// to the default computer first, so the profiles it offers are that
+/// computer's.
+#[test]
+fn an_explicit_profile_pick_stays_on_its_computer() {
+    let (mut s, _pump, _mac_gw, _studio_gw) =
+        two_gateways(&[("default", "Default"), ("work", "Work")], vec![]);
+    s.prefs.default_computer = Some("studio".into());
+
+    s.workspace.draft = None;
+    crate::workspace::draft::start_in_profile(&mut s, "work".into());
+    assert_eq!(s.onboarding.computer.key(), "mac", "no handover");
+    assert_eq!(s.workspace.draft.as_ref().expect("draft").profile, "work");
+
+    // Shift (⇧⌘N): the current profile, here.
+    s.workspace.draft = None;
+    crate::workspace::inbox::picker::new_thread(&mut s, true);
+    assert_eq!(s.onboarding.computer.key(), "mac", "⇧⌘N stays");
+
+    s.workspace.draft = None;
+    crate::workspace::inbox::picker::new_thread(&mut s, false);
+    assert_eq!(
+        s.onboarding.computer.key(),
+        "studio",
+        "the button goes to the default computer before offering profiles"
+    );
+    assert!(!crate::workspace::command::is_new_thread_in(&s));
 }
 
 #[test]

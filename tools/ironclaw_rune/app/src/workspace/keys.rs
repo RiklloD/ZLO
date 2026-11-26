@@ -7,7 +7,7 @@
 
 use rune::{Chord, Key, KeyEvent, MenuItem, Shortcut, Tx};
 
-use super::{command, draft, in_settings, inbox};
+use super::{command, in_settings, inbox};
 use crate::state::{Conn, State};
 
 /// One View menu entry: title, chord, action.
@@ -19,9 +19,16 @@ type Binding = (&'static str, &'static str, fn(&mut State, &mut Tx));
 // see move: a column sliding, the composer flying back to a new draft, ⌘K
 // or the model picker rising, the status bar folding, the palette morphing.
 const BINDINGS: &[Binding] = &[
-    ("New Thread", "mod+shift+o", |s, tx| {
+    // t3code's chat.new (⌘N, ⇧⌘O): straight in when there is nothing to
+    // choose, else ⌘K on "New thread in…"; chat.newLocal (⇧⌘N): the
+    // current profile.
+    ("New Thread", "mod+n", |s, tx| {
         tx.animated();
-        new_thread(s)
+        new_thread(s, false)
+    }),
+    ("New Thread in Current Profile", "mod+shift+n", |s, tx| {
+        tx.animated();
+        new_thread(s, true)
     }),
     // The column toggles slide like their titlebar buttons, on the panels'
     // one curve.
@@ -62,7 +69,10 @@ const BINDINGS: &[Binding] = &[
 
 /// Extra chords for a View menu action, matched by `on_key` only (a menu
 /// item carries one key equivalent): the action's title, then the chord.
-const ALIASES: &[(&str, &str)] = &[("Toggle Workspace Panel", "mod+e")];
+const ALIASES: &[(&str, &str)] = &[
+    ("Toggle Workspace Panel", "mod+e"),
+    ("New Thread", "mod+shift+o"),
+];
 
 /// The View menu action titled `title`, for tests that run it as the menu does.
 #[cfg(test)]
@@ -115,10 +125,11 @@ pub fn on_close(s: &mut State, _tx: &mut Tx) {
     crate::drafts::save(s, true);
 }
 
-/// ⇧⌘O: a fresh draft in the Default profile.
-fn new_thread(s: &mut State) {
+/// ⌘N / ⇧⌘O, and ⇧⌘N (`here`): see `inbox::picker::new_thread`.
+fn new_thread(s: &mut State, here: bool) {
     if matches!(s.conn, Conn::Ready) {
-        draft::start_in_profile(s, zlo_client::profiles::DEFAULT_PROFILE_ID.into());
+        s.workspace.command = None;
+        inbox::picker::new_thread(s, here);
     }
 }
 

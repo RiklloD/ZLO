@@ -58,9 +58,8 @@ pub struct Inbox {
     /// The search field.
     pub search: TextEdit,
     pub filters_open: bool,
-    /// The new-thread button's profile menu.
-    pub new_menu_open: bool,
-    /// The open profile menu's search and selection (`picker.rs`).
+    /// The new-thread screen's profile combobox: search and highlight
+    /// (`picker.rs`).
     pub picker: picker::ProfilePicker,
     pub profile: Option<String>,
     pub model: Option<String>,
@@ -148,7 +147,6 @@ impl Inbox {
             list: InboxListResponse::default(),
             search: TextEdit::new(""),
             filters_open: false,
-            new_menu_open: false,
             picker: picker::ProfilePicker::new(),
             profile: None,
             model: None,
@@ -481,6 +479,7 @@ pub fn profiles_changed(s: &mut State, change: ProfileChange<'_>) {
                 display_name: saved.settings.display_name.clone(),
                 git_branch: saved.git_branch.clone(),
                 last_used_at: saved.last_used_at,
+                folder: Some(saved.effective_folder.clone()),
             };
             match list
                 .profiles
@@ -688,7 +687,7 @@ fn settled(s: &mut State, thread_id: &str, list: InboxListResponse, tx: &mut Tx)
         None => {
             s.chat = None;
             s.workspace.draft = None;
-            draft::start_in_profile(s, DEFAULT_PROFILE_ID.into());
+            draft::start_on_default_computer(s, DEFAULT_PROFILE_ID.into());
         }
     }
 }
@@ -1217,6 +1216,7 @@ mod tests {
             display_name: id.into(),
             git_branch: None,
             last_used_at: None,
+            folder: None,
         };
         let body = |ids: &[&str], last: &str| {
             serde_json::to_string(&InboxListResponse {

@@ -3,7 +3,6 @@
 //! the new-thread screen and the settings nav. No gateway is involved.
 
 use chrono::Utc;
-use rune::TextEdit;
 use zlo_client::history::{
     HistoryHighlight, HistoryHit, HistorySearchRole, HistoryThreadOrigin, HistoryThreadResult,
 };
@@ -128,12 +127,14 @@ fn inbox() -> InboxListResponse {
                 display_name: "Default".into(),
                 git_branch: None,
                 last_used_at: None,
+                folder: None,
             },
             InboxProfile {
                 profile_id: "work".into(),
                 display_name: "IronClaw".into(),
                 git_branch: Some("main".into()),
                 last_used_at: None,
+                folder: None,
             },
         ],
         last_used_profile_id: Some("work".into()),
@@ -205,44 +206,61 @@ pub fn fixture_shell(s: &mut State) {
     });
 }
 
-/// The sidebar's profile menu on a long profile list: recents with their
-/// age, the rest by name, a profile working and one that needs an answer.
+/// "New thread in…" (⌘K, as the new-thread button opens it) on a long
+/// profile list: the current profile first, two pinned, then by last use,
+/// each with the folder it works in.
 pub fn fixture_profile_menu(s: &mut State) {
     fixture_shell(s);
     let now = Utc::now().timestamp_millis();
-    let profile = |id: &str, name: &str, branch: Option<&str>, mins: Option<i64>| InboxProfile {
+    let home = dirs::home_dir().unwrap_or_default();
+    let profile = |id: &str, name: &str, folder: Option<&str>, mins: Option<i64>| InboxProfile {
         profile_id: id.into(),
         display_name: name.into(),
-        git_branch: branch.map(str::to_string),
+        git_branch: None,
         last_used_at: mins.map(|m| now - m * 60_000),
+        folder: folder.map(|f| home.join(f).to_string_lossy().into_owned()),
     };
     s.workspace.inbox.list.profiles = vec![
-        profile("default", "Default", None, Some(0)),
-        profile("avallon", "Avallon Case", None, None),
-        profile("flat", "Flat Finder", None, Some(60 * 30)),
-        profile("futur", "Futurchoices", None, None),
-        profile("work", "IronClaw Builder", Some("main"), Some(3)),
-        profile("verpin", "Verpin", Some("main"), Some(190)),
-        profile("thesis", "Thesis", None, None),
+        profile("default", "Default", Some(".zlo/default"), Some(0)),
+        profile("avallon", "Avallon Case", Some("Documents/avallon"), None),
+        profile(
+            "flat",
+            "Flat Finder",
+            Some("Dev/flat-finder"),
+            Some(60 * 30),
+        ),
+        profile("futur", "Futurchoices", Some("Dev/futurchoices"), None),
+        profile("work", "IronClaw Builder", Some("ironclaw"), Some(3)),
+        profile("verpin", "Verpin", Some("Dev/verpin"), Some(190)),
+        profile("thesis", "Thesis", Some("Documents/thesis"), None),
         profile("notion", "Notion Manager", None, None),
-        profile("finance", "Financial Advisor", None, None),
-        profile("cyber", "Cyberzen", Some("master"), None),
+        profile("finance", "Financial Advisor", None, Some(60 * 24 * 3)),
+        profile("cyber", "Cyberzen", Some("Dev/CyberZen"), None),
         profile("network", "Network Manager", None, None),
-        profile("club", "Techclub", None, None),
+        profile("club", "Techclub", Some("Dev/techclub"), None),
     ];
-    s.workspace.inbox.list.last_used_profile_id = Some("default".into());
-    super::inbox::picker::toggle_new_menu(s);
+    s.workspace.inbox.list.last_used_profile_id = Some("work".into());
+    s.prefs.pinned_profiles = vec!["this-mac/verpin".into(), "this-mac/thesis".into()];
+    super::inbox::picker::new_thread(s, false);
 }
 
-/// The new-thread screen's profile switch, filtered by typing, the
-/// second match selected.
+/// The new-thread screen's heading and its profile combobox, filtered by
+/// typing, the second match highlighted.
 pub fn fixture_profile_menu_search(s: &mut State) {
     fixture_profile_menu(s);
+    s.workspace.command = None;
     s.chat = None;
-    super::draft::open(s);
+    super::draft::start_in_profile(s, "work".into());
     super::inbox::picker::toggle_draft_menu(s);
     s.workspace.inbox.picker.search.replace_text("man");
     s.workspace.inbox.picker.fixture_select(1);
+}
+
+/// The new-thread screen's combobox, open on the whole list.
+pub fn fixture_profile_combobox(s: &mut State) {
+    fixture_profile_menu_search(s);
+    s.workspace.inbox.picker.search.replace_text("");
+    s.workspace.inbox.picker.fixture_select(2);
 }
 
 /// Every inbox shelf unfolded, ⌘ held (jump badges), one snooze menu open
@@ -386,11 +404,7 @@ pub fn fixture_inbox_subagents(s: &mut State) {
 /// The ⌘K menu over the shell, with a query and message hits.
 pub fn fixture_command_menu(s: &mut State) {
     fixture_shell(s);
-    s.workspace.command = Some(super::command::CommandMenu {
-        input: TextEdit::new("port"),
-        selected: 1,
-        opened: 1,
-    });
+    s.workspace.command = Some(super::command::CommandMenu::root("port", 1, 1));
     s.workspace.message_search.fixture(
         "port",
         vec![HistoryThreadResult {
@@ -733,12 +747,14 @@ pub fn fixture_inbox_two_computers(s: &mut State) {
                 display_name: "Default".into(),
                 git_branch: None,
                 last_used_at: None,
+                folder: None,
             },
             InboxProfile {
                 profile_id: "infra".into(),
                 display_name: "Infra".into(),
                 git_branch: Some("main".into()),
                 last_used_at: None,
+                folder: None,
             },
         ],
         last_used_profile_id: Some("infra".into()),

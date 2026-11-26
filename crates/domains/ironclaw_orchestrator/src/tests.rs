@@ -880,6 +880,39 @@ async fn legacy_threads_import_once() {
 }
 
 #[tokio::test]
+async fn a_fresh_profile_never_takes_an_archived_id() {
+    use crate::profiles::{ProfileOwner, parse_profile_slug};
+    use ironclaw_product_contracts::profiles::ProfileSettings;
+
+    let h = harness().await;
+    let store = h.engine.store();
+    let owner = ProfileOwner::from(&scope());
+    let settings = ProfileSettings {
+        display_name: "Spare".into(),
+        ..ProfileSettings::default()
+    };
+    // An archived id: a fresh create is refused (it would hand the old
+    // profile's threads new settings); a plain create brings it back.
+    let spare = parse_profile_slug("spare").unwrap();
+    store
+        .create_profile(&owner, &spare, &settings)
+        .await
+        .unwrap();
+    store.archive_profile(&owner, &spare).await.unwrap();
+    let fresh = store.create_new_profile(&owner, &spare, &settings).await;
+    assert_eq!(fresh.unwrap_err().code(), "profile_exists");
+    let new_id = parse_profile_slug("brand-new").unwrap();
+    store
+        .create_new_profile(&owner, &new_id, &settings)
+        .await
+        .unwrap();
+    store
+        .create_profile(&owner, &spare, &settings)
+        .await
+        .expect("a plain create revives the archived profile");
+}
+
+#[tokio::test]
 async fn profiles_own_threads_for_life_and_steer_delegation() {
     use crate::profiles::{ProfileOwner, parse_profile_slug};
     use ironclaw_product_contracts::profiles::ProfileSettings;

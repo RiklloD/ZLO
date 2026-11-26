@@ -248,10 +248,14 @@ pub const WEBUI_V2_ROUTE_PROFILE_UPDATE: &str = "webui.v2.profiles.update";
 pub const WEBUI_V2_ROUTE_PROFILE_DELETE: &str = "webui.v2.profiles.delete";
 pub const WEBUI_V2_ROUTE_PROFILE_THREAD_CREATE: &str = "webui.v2.profiles.thread_create";
 pub const WEBUI_V2_ROUTE_PROFILES_IMPORT_HERMES: &str = "webui.v2.profiles.import_hermes";
+pub const WEBUI_V2_ROUTE_PROFILE_CREATE_FRESH: &str = "webui.v2.profiles.create_fresh";
 pub const WEBUI_V2_PATTERN_PROFILES: &str = "/api/webchat/v2/profiles";
 pub const WEBUI_V2_PATTERN_PROFILE: &str = "/api/webchat/v2/profiles/{profile_id}";
 pub const WEBUI_V2_PATTERN_PROFILE_THREADS: &str = "/api/webchat/v2/profiles/{profile_id}/threads";
 pub const WEBUI_V2_PATTERN_PROFILES_IMPORT_HERMES: &str = "/api/webchat/v2/profiles/import/hermes";
+/// Two segments, so a gateway from before it answers 404 instead of
+/// taking it for `/profiles/{profile_id}` (an update of "create").
+pub const WEBUI_V2_PATTERN_PROFILES_CREATE_FRESH: &str = "/api/webchat/v2/profiles/create/fresh";
 
 // Usage route (subscription usage windows for the Usage page).
 pub const WEBUI_V2_ROUTE_USAGE_REPORT: &str = "webui.v2.usage.report";
@@ -634,6 +638,11 @@ pub fn webui_v2_routes_with_artifact_flags(
             WEBUI_V2_ROUTE_PROFILES_IMPORT_HERMES,
             NetworkMethod::Post,
             WEBUI_V2_PATTERN_PROFILES_IMPORT_HERMES,
+        ),
+        profile_route_descriptor(
+            WEBUI_V2_ROUTE_PROFILE_CREATE_FRESH,
+            NetworkMethod::Post,
+            WEBUI_V2_PATTERN_PROFILES_CREATE_FRESH,
         ),
         usage_report_descriptor(),
         usage_history_descriptor(),
