@@ -39,9 +39,11 @@ Supermemory API key is stored" although they had registered one.
    Set = verify with the provider first, store only on success (pre-validate
    pattern), then read back `contains`. A provider that cannot be reached
    stores the key as *unverified* and says so.
-3. **Hermes import carries the key**: the explicit "Use the key from Hermes"
-   action, and the existing Hermes profile import, store `supermemory_api_key`
-   when ZLO has none. Never overwrites a stored key.
+3. **Hermes key import is explicit**: "Use the key from Hermes" on Keys,
+   on the Memory page and in setup stores `supermemory_api_key` after the
+   same verification. Offered only when every Hermes `.env` that sets
+   `SUPERMEMORY_API_KEY` agrees on one value. The one-time Hermes profile
+   import is not changed (it already ran for existing users).
 4. **Setup gets a Memory step** (Connect → Agents → Memory → Projects): pick
    Supermemory (paste or import the key; tested) or a local knowledge wiki.
    One of the two is required to continue; a step already satisfied (key
@@ -65,3 +67,11 @@ Supermemory API key is stored" although they had registered one.
   today).
 - The parked "learns you" background review (`parked-memory-learning`).
 - Config sync of keys (sync phase 3).
+
+## Verified (2026-11-26)
+
+Rig backend with a fresh `ZLO_HOME` and two copied Hermes `.env` files:
+fake key refused (`field: value`) and not stored; import from Hermes
+`verified`; Supermemory status flips to active at once (cache dropped);
+documents and search return the real account's data; wiki init creates
+three pages, a second init keeps all three; no `sm_` string in the log.
