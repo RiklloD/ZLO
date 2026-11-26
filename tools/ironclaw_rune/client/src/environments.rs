@@ -243,8 +243,10 @@ impl Registry {
     }
 
     /// Whether ZLO should run (start, restart) the backend on this Mac.
+    /// Decided by the "Run IronClaw on this Mac" switch alone: this Mac's
+    /// backend stays up as a peer even while another computer has the focus.
     pub fn runs_local_backend(&self) -> bool {
-        self.run_local_backend && self.active == Active::ThisMac
+        self.run_local_backend
     }
 
     pub fn to_json(&self) -> Result<Vec<u8>, serde_json::Error> {
@@ -756,6 +758,11 @@ mod tests {
         let empty = Registry::from_json(b"{}").unwrap();
         assert_eq!(empty, Registry::default());
         assert!(empty.runs_local_backend());
+        let remote_on = Registry {
+            active: Active::Environment("env-1".into()),
+            ..Registry::default()
+        };
+        assert!(remote_on.runs_local_backend());
         assert_eq!(
             Registry::from_json(br#"{"active":"this-mac"}"#)
                 .unwrap()

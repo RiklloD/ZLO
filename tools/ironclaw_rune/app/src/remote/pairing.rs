@@ -120,6 +120,7 @@ pub fn discover(s: &mut State) {
             page.discovering = false;
             page.tailscale = Some(discovery.is_some());
             page.discovery = discovery;
+            super::peers::sync(s);
         });
     });
 }
@@ -358,7 +359,7 @@ pub(crate) fn paired(s: &mut State, result: Result<Paired, PairError>) {
         Ok(p) => p,
         Err(e) => {
             // A tunnel opened for this pairing is not needed any more.
-            super::tunnel::retain(s.remote.tunnel.as_deref());
+            super::retain_tunnels(s);
             if matches!(e, PairError::NotOwner(_) | PairError::TailnetDisabled(_)) {
                 // The code field is the way on: it goes to that computer.
                 s.remote.page.input.focused = true;
@@ -446,8 +447,11 @@ pub fn remove(s: &mut State, environment_id: String) {
     }
     if was_active {
         super::switch_to(s, Active::ThisMac);
-    } else if let Err(e) = super::save_registry(s) {
-        s.remote.page.error = Some(e);
+    } else {
+        if let Err(e) = super::save_registry(s) {
+            s.remote.page.error = Some(e);
+        }
+        super::peers::sync(s);
     }
 }
 
@@ -463,6 +467,7 @@ pub fn set_run_local(s: &mut State, on: bool) {
         crate::service::stop();
     }
     super::sync_local_backend(s);
+    super::peers::sync(s);
     if on && !super::backend_is_remote(s) && !matches!(s.conn, crate::state::Conn::Ready) {
         crate::workspace::reconnect(s);
     }

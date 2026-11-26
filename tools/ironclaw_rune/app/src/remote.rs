@@ -21,6 +21,7 @@ pub(crate) mod connect;
 pub(crate) mod failback;
 pub mod linked;
 pub mod pairing;
+pub mod peers;
 pub mod tunnel;
 pub mod updates;
 
@@ -97,6 +98,8 @@ pub struct RemoteState {
     pub route_rank: usize,
     /// Linked environments and agent requests (`linked.rs`).
     pub linked: linked::LinkedState,
+    /// Background connections to every non-focused usable computer (`peers.rs`).
+    pub peers: peers::Peers,
 }
 
 #[derive(Clone, Debug)]
@@ -124,6 +127,7 @@ impl Default for RemoteState {
             updates: Default::default(),
             route_rank: 0,
             linked: Default::default(),
+            peers: Default::default(),
         }
     }
 }
@@ -223,8 +227,8 @@ impl Launch {
 }
 
 /// The start decision: never with `IRONCLAW_DESKTOP_URL`, an unreadable
-/// registry, a computer not yet moved from `gateway.json`, the switch off,
-/// or another computer active.
+/// registry, a computer not yet moved from `gateway.json`, or the switch off.
+/// Stays on while another computer has the focus so This Mac runs as a peer.
 pub fn local_backend_allowed(
     registry: Result<Registry, &String>,
     legacy_active: bool,
@@ -436,6 +440,16 @@ pub fn lands(s: &State, tag: &ConnTag) -> bool {
 /// keeps the environment and takes a new generation, `connect::adopt`).
 pub fn same_computer(s: &State, tag: &ConnTag) -> bool {
     s.remote.tag.environment == tag.environment && s.remote.tag.generation != tag.generation
+}
+
+/// Keep the focused computer's tunnel and every peer's tunnel open; close
+/// all others.
+pub(crate) fn retain_tunnels(s: &State) {
+    let mut keep = s.remote.peers.tunnel_keys();
+    if let Some(t) = s.remote.tunnel.as_deref() {
+        keep.push(t);
+    }
+    tunnel::retain_many(&keep);
 }
 
 fn active_key(active: &Active) -> String {

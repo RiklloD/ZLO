@@ -36,9 +36,9 @@ pub enum Problem {
     Blocked(String),
 }
 
-/// What the active computer resolves to before any request.
+/// What a computer resolves to before any request.
 #[derive(Clone, Debug)]
-enum Target {
+pub(super) enum Target {
     ThisMac,
     /// `IRONCLAW_DESKTOP_URL`.
     Override,
@@ -47,17 +47,17 @@ enum Target {
     Legacy(LegacyGateway),
 }
 
-struct Resolved {
-    conn: Connection,
-    computer: Computer,
-    descriptor: Option<EnvironmentDescriptor>,
+pub(super) struct Resolved {
+    pub(super) conn: Connection,
+    pub(super) computer: Computer,
+    pub(super) descriptor: Option<EnvironmentDescriptor>,
     /// The `gateway.json` computer, moved: save it, then delete the file.
-    migrated: Option<SavedEnvironment>,
+    pub(super) migrated: Option<SavedEnvironment>,
     /// The SSH tunnel the connection goes through (`tunnel::key`).
-    tunnel: Option<String>,
+    pub(super) tunnel: Option<String>,
     /// Which of the computer's routes answered, in `preferred_routes` order
     /// (0 = its first). A later one starts the fail-back check.
-    route_rank: usize,
+    pub(super) route_rank: usize,
 }
 
 /// App-only, nothing picked yet: the window asks for a computer.
@@ -197,25 +197,26 @@ fn start(s: &mut State, mode: Mode) {
         );
     };
     let tokens = s.remote.tokens.clone();
-    let handle = s.rt.handle.clone();
+    let rt = s.rt.clone();
     // Only a backend this app starts, its own bundled one, makes its token
     // on first start (`cargo run` on an installed CLI does not).
     let own_backend = super::runs_local_backend(s) && crate::service::provisions_token();
     net.spawn(async move {
         let resolved = resolve(target, tokens, own_backend).await;
-        handle.update(move |s, _| {
+        rt.deliver(move |s, _| {
             if s.fixture || s.workspace.connect_gen != generation {
-                return;
+                return false;
             }
             match resolved {
                 Ok(r) => open(s, generation, mode, r),
                 Err(p) => failed(s, mode, p),
             }
+            true
         });
     });
 }
 
-async fn resolve(
+pub(super) async fn resolve(
     target: Target,
     tokens: Arc<dyn TokenStore>,
     own_backend: bool,
@@ -492,7 +493,7 @@ fn open(s: &mut State, generation: Generation, mode: Mode, r: Resolved) {
         Ok(b) => b,
         Err(e) => return failed(s, mode, Problem::Blocked(e.to_string())),
     };
-    let handle = s.rt.handle.clone();
+    let rt = s.rt.clone();
     let job = backend.spawn(|c| async move {
         let session = c.session().await?;
         let inbox = c.inbox().await?;
@@ -510,18 +511,19 @@ fn open(s: &mut State, generation: Generation, mode: Mode, r: Resolved) {
     s.remote.page.pending_backend = Some((generation, backend.clone()));
     backend.spawn(move |_| async move {
         let result = crate::jobs::flatten(job.await);
-        handle.update(move |s, tx| {
+        rt.deliver(move |s, tx| {
             if s.fixture {
-                return;
+                return false;
             }
             let backend = match claim_pending(s, generation) {
-                Claim::Stale => return,
+                Claim::Stale => return false,
                 Claim::Missing => {
-                    return failed(
+                    failed(
                         s,
                         mode,
                         Problem::Unreachable("The connection was replaced. Trying again.".into()),
                     );
+                    return true;
                 }
                 Claim::Mine(backend) => backend,
             };
@@ -529,7 +531,7 @@ fn open(s: &mut State, generation: Generation, mode: Mode, r: Resolved) {
                 Ok((session, inbox)) => {
                     s.remote.tunnel = tunnel;
                     s.remote.route_rank = route_rank;
-                    switched(s, mode, backend, computer, descriptor, session, inbox, tx)
+                    switched(s, mode, backend, computer, descriptor, session, inbox, tx);
                 }
                 Err(e) => {
                     // The launch screen giving way to the failure is the
@@ -543,6 +545,7 @@ fn open(s: &mut State, generation: Generation, mode: Mode, r: Resolved) {
                     }
                 }
             }
+            true
         });
     });
 }
@@ -580,7 +583,7 @@ pub(crate) fn claim_pending(s: &mut State, generation: Generation) -> Claim {
     }
 }
 
-fn problem_of(computer: &Computer, e: &ClientError) -> Problem {
+pub(super) fn problem_of(computer: &Computer, e: &ClientError) -> Problem {
     match (e, computer) {
         (ClientError::Network(_), _) => Problem::Unreachable(e.to_string()),
         (e, Computer::Remote(r)) if e.is_unauthorized() => Problem::Blocked(format!(
@@ -637,8 +640,8 @@ pub(super) fn switched(
     adopt(s, computer, descriptor);
     s.rt.backend = Some(backend);
     super::failback::schedule(s);
-    // Only the tunnel this connection goes through stays open.
-    super::tunnel::retain(s.remote.tunnel.as_deref());
+    // Keep the focused computer's tunnel and every peer's tunnel open.
+    super::retain_tunnels(s);
     if s.remote.switching.take().is_some()
         && let Err(e) = super::save_registry(s)
     {
@@ -655,6 +658,7 @@ pub(super) fn switched(
     crate::workspace::connected(s, session, inbox, reopen, tx);
     super::pairing::connected(s);
     super::linked::start_polling(s);
+    super::peers::sync(s);
 }
 
 /// The app is on `computer` now: a new connection tag, so every reply
@@ -716,8 +720,9 @@ fn failed(s: &mut State, mode: Mode, problem: Problem) {
         };
         tracing::warn!(computer = %key, problem = %line, "switch failed");
         s.remote.problems.insert(key, line);
-        super::tunnel::retain(s.remote.tunnel.as_deref());
+        super::retain_tunnels(s);
         super::sync_local_backend(s);
+        super::peers::sync(s);
         return;
     }
     if let Computer::Remote(r) = &s.onboarding.computer
@@ -756,6 +761,7 @@ pub fn migrate_in_background(s: &mut State) {
                     Ok(()) => super::forget_legacy(s),
                     Err(e) => tracing::warn!(error = %e, "moved computer not saved; kept gateway.json"),
                 }
+                super::peers::sync(s);
             }
             Err(e) => tracing::debug!(error = %e, "paired computer not moved yet; next launch tries again"),
         });

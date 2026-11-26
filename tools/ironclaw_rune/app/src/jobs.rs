@@ -42,7 +42,7 @@ impl Rt {
     }
 
     /// Queue `f` for the UI thread (`AppHandle::update_if`).
-    fn deliver(&self, f: impl FnOnce(&mut State, &mut Tx) -> bool + Send + 'static) {
+    pub(crate) fn deliver(&self, f: impl FnOnce(&mut State, &mut Tx) -> bool + Send + 'static) {
         #[cfg(test)]
         if let Some(sink) = &self.sink {
             sink.push(Box::new(f));

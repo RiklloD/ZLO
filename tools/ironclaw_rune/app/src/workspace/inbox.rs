@@ -634,6 +634,7 @@ fn marked(s: &mut State, result: Result<InboxListResponse, ClientError>, shown: 
                 tx.animated();
             }
             apply(s, list);
+            crate::remote::peers::refresh(s);
         }
         // silent-ok: an older gateway has no marks; the row stays as it was.
         Err(e) => tracing::debug!(error = %e, "inbox mark failed"),
@@ -672,6 +673,7 @@ fn settled(s: &mut State, thread_id: &str, list: InboxListResponse, tx: &mut Tx)
     tx.animated();
     let open = s.page == Page::Chat && active_id(s) == Some(thread_id);
     apply(s, list);
+    crate::remote::peers::refresh(s);
     if !open {
         return;
     }
