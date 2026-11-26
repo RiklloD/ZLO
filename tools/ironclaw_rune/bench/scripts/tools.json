@@ -3,10 +3,15 @@
   {
    "t": 0.3,
    "type": "tap",
+   "key": "fold-msg:tools-q-head"
+  },
+  {
+   "t": 0.8,
+   "type": "tap",
    "key": "act-tool:b0-head"
   },
   {
-   "t": 1.0,
+   "t": 1.5,
    "type": "scroll",
    "x": 1000,
    "y": 420,
@@ -15,7 +20,7 @@
    "fling": true
   },
   {
-   "t": 2.0,
+   "t": 2.5,
    "type": "scroll",
    "x": 1000,
    "y": 420,
@@ -24,7 +29,7 @@
    "fling": true
   },
   {
-   "t": 3.0,
+   "t": 3.5,
    "type": "scroll",
    "x": 1000,
    "y": 420,

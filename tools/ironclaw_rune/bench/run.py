@@ -44,7 +44,7 @@ INTERACTIONS = {
     "dock": ("bench-dock", 3.3),
     "typing": ("bench-typing", 7.0),
     "shelf": ("bench-shelf", 4.0),
-    "tools": ("bench-tools", 4.5),
+    "tools": ("bench-tools", 5.0),
 }
 
 PHASES = ["view_cpu", "commit_cpu", "layout_cpu", "text_cpu", "paint_cpu", "encode_ms"]

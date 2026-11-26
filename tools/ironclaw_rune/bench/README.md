@@ -45,7 +45,7 @@ gateway's latency is left out and only the UI's cost is measured.
 | `dock` | 40-turn chat, right pane closed | ⌥⌘B ×3 |
 | `typing` | 40-turn chat | 200 chars into the composer, 30 ms apart |
 | `shelf` | 40-turn chat | none: 3 runs start (cards move to the Working shelf), then end |
-| `tools` | a finished turn with 1000 tool calls, group collapsed | tap the group open, then 3 trackpad swipes through it |
+| `tools` | a finished turn with 1000 tool calls, its "Worked for" fold shut | tap the fold open, tap its tool group's summary row open, then 3 trackpad swipes through the 1000 steps |
 
 ## Columns
 
