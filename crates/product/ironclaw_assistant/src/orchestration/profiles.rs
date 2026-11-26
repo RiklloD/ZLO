@@ -175,7 +175,12 @@ pub(crate) async fn write(
     engine
         .check_profile_defaults(&request.settings, scope)
         .await?;
-    let record = if create {
+    let record = if create && request.fresh {
+        engine
+            .store()
+            .create_new_profile(&owner, &id, &request.settings)
+            .await?
+    } else if create {
         engine
             .store()
             .create_profile(&owner, &id, &request.settings)
@@ -972,5 +977,51 @@ mod tests {
         assert_eq!(memory.container, "finance");
         assert_eq!(memory.read_containers, vec!["hermes".to_string()]);
         assert_eq!(memory.instructions.as_deref(), Some("x"));
+    }
+
+    /// The pickers' "Add profile" creates fresh: a write naming an archived
+    /// profile's id is refused instead of giving that profile's threads new
+    /// settings; the Settings form's plain create still restores it.
+    #[tokio::test]
+    async fn a_fresh_write_refuses_an_archived_id() {
+        use ironclaw_host_api::ids::{TenantId, UserId};
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(
+            libsql::Builder::new_local(dir.path().join("o.db"))
+                .build()
+                .await
+                .unwrap(),
+        );
+        let runtime =
+            Arc::new(ironclaw_libsql_runtime::LibSqlRuntime::new(Arc::clone(&db)).unwrap());
+        let engine = Engine::open_libsql(runtime, "ironclaw").await.unwrap();
+        let scope = ThreadScope {
+            tenant_id: TenantId::new("t1").unwrap(),
+            user_id: UserId::new("u1").unwrap(),
+            agent_id: None,
+            project_id: None,
+        };
+        let home = ProfileHome::new(dir.path().to_path_buf());
+        let request = |fresh: bool, name: &str| ProfileWriteRequest {
+            profile_id: "site".into(),
+            settings: ProfileSettings {
+                display_name: name.into(),
+                ..ProfileSettings::default()
+            },
+            fresh,
+        };
+        write(&engine, &home, &scope, request(true, "Site"), true)
+            .await
+            .expect("a new id is created");
+        delete(&engine, &scope, "site").await.unwrap();
+
+        let refused = write(&engine, &home, &scope, request(true, "Other"), true).await;
+        assert_eq!(refused.unwrap_err().code(), "profile_exists");
+
+        let restored = write(&engine, &home, &scope, request(false, "Restored"), true)
+            .await
+            .expect("a plain create restores it");
+        assert_eq!(restored.settings.display_name, "Restored");
     }
 }

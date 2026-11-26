@@ -59,6 +59,7 @@ pub async fn profile_update(
     let request = ProfileWriteRequest {
         profile_id,
         settings,
+        fresh: false,
     };
     Ok(Json(
         invoke_product_command(state.services(), caller, PROFILE_UPDATE_COMMAND, request).await?,

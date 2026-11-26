@@ -51,6 +51,22 @@ impl Client {
         let body = ProfileWriteRequest {
             profile_id: profile_id.to_string(),
             settings,
+            fresh: false,
+        };
+        document(self.post(&format!("{V2}/profiles"), &body).await?)
+    }
+
+    /// Create a profile under an id no profile has had: an archived one
+    /// answers `profile_exists` instead of coming back.
+    pub async fn create_new_profile(
+        &self,
+        profile_id: &str,
+        settings: ProfileSettings,
+    ) -> Result<ProfileInfo, ClientError> {
+        let body = ProfileWriteRequest {
+            profile_id: profile_id.to_string(),
+            settings,
+            fresh: true,
         };
         document(self.post(&format!("{V2}/profiles"), &body).await?)
     }

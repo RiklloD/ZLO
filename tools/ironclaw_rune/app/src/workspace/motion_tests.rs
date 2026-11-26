@@ -94,23 +94,20 @@ fn the_command_pill_sits_on_the_selected_row_and_glides() {
 }
 
 #[test]
-fn the_profile_menu_glides_its_pill_and_pops_its_keycaps() {
-    let mut rt = runtime(crate::workspace::fixtures::fixture_profile_menu);
+fn the_profile_combobox_glides_its_highlight() {
+    let mut rt = runtime(crate::workspace::fixtures::fixture_profile_combobox);
     assert!(under(&rt, "profile-pill").contains("pick-profile-id-"));
-    assert!(rt.presented("shortcut-badge").is_none() || !rt.state.workspace.inbox.cmd_held);
-    // ⌘ goes down: the menu's keycaps grow in rather than flashing.
+    let from = rect(&rt, "profile-pill");
     rt.update(|s, tx| {
         tx.animated();
-        s.workspace.inbox.picker.fixture_cmd(true);
+        s.workspace.inbox.picker.fixture_select(0);
     });
-    frames(&mut rt, 2);
-    let pose = rt
-        .presented_pose("shortcut-badge")
-        .expect("a keycap is drawn");
-    assert!(pose.scale() < 0.99, "it pops in: {}", pose.scale());
+    frames(&mut rt, 3);
+    let mid = rect(&rt, "profile-pill");
+    assert!(mid[1] < from[1], "it moves up: {from:?} → {mid:?}");
+    assert!(mid[1] > from[1] - 62., "but glides, not jumps: {mid:?}");
     frames(&mut rt, 60);
-    let pose = rt.presented_pose("shortcut-badge").expect("still drawn");
-    assert!((pose.scale() - 1.).abs() < 1e-3);
+    assert!(under(&rt, "profile-pill").contains("pick-profile-id-"));
 }
 
 #[test]

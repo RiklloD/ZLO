@@ -1,6 +1,6 @@
 //! The new-thread screen (t3code's, with a profile where t3code has a project):
-//! "What should we work on?", the profile picker below it, and the composer
-//! card. Nothing exists on the gateway until the first message is sent, so
+//! "What should we work on in <profile>?" (the name opens the profile
+//! picker), and the composer card. Nothing exists on the gateway until the first message is sent, so
 //! abandoned drafts leave no empty threads behind.
 //!
 //! The composer shares the chat's pieces (area A): staged files are inline
@@ -26,7 +26,7 @@ pub use snapshot::stage_snapshot;
 use submit::{Origin, Submission, send_with, submit};
 
 use super::inbox::{self, picker};
-use super::ui::{self, SEMIBOLD, SM, XS, t, tw};
+use super::ui::{self, REGULAR, SEMIBOLD, SM, XS, t, tw};
 use crate::chat::menu::{self, ComposerMenu, MenuKey, MenuKeyName};
 use crate::chat::model_picker::ModelPickerState;
 use crate::chat::{composer, inline_files};
@@ -37,6 +37,8 @@ use crate::state::{Page, State};
 
 /// The new-thread composer's width at rest.
 const HERO_WIDTH: f32 = 720.;
+/// The heading's type size (t3code's `text-3xl`, ZLO's 32).
+const HERO_SIZE: f32 = 32.;
 
 pub struct DraftState {
     pub profile: String,
@@ -140,15 +142,26 @@ pub fn composer_edit<'a>(s: &'a mut State, target: &ComposerTarget) -> Option<&'
     }
 }
 
-/// Show the new-thread screen; an unsent draft keeps its text.
+/// Show the new-thread screen; an unsent draft keeps its text. A fresh
+/// draft starts on the "New threads start on" computer.
 pub(super) fn open(s: &mut State) {
+    open_on(s, true);
+}
+
+/// [`open`]; `default_computer` false keeps a fresh draft on the focused
+/// computer (a profile picked from its list belongs to it).
+fn open_on(s: &mut State, default_computer: bool) {
     // A newer navigation than a thread click still waiting on a switch.
     s.remote.pending_thread = None;
     s.page = Page::Draft;
     if s.workspace.draft.is_none() {
-        let computer_note = match runs_on::apply_default_on_open(s) {
-            runs_on::DefaultOutcome::Switched => return,
-            runs_on::DefaultOutcome::Stay(note) => note,
+        let computer_note = if default_computer {
+            match runs_on::apply_default_on_open(s) {
+                runs_on::DefaultOutcome::Switched => return,
+                runs_on::DefaultOutcome::Stay(note) => note,
+            }
+        } else {
+            None
         };
         let list = &s.workspace.inbox.list;
         let saved = drafts::restore(s, drafts::NEW_THREAD);
@@ -304,10 +317,23 @@ pub(super) fn quick_send(s: &mut State, text: String, voice: Option<crate::voice
     submit(s, submission, voice);
 }
 
-/// A profile picked in either menu: open the draft screen in it.
+/// A profile picked in either menu: open the draft screen in it, on the
+/// focused computer, whose list the profile came from (the "New threads
+/// start on" computer applies before a profile is offered,
+/// `inbox::picker::new_thread`).
 pub fn start_in_profile(s: &mut State, profile: String) {
+    start(s, profile, false);
+}
+
+/// A fresh draft the app opens by itself (nothing to show, triage): the
+/// "New threads start on" computer applies, as on [`open`].
+pub(super) fn start_on_default_computer(s: &mut State, profile: String) {
+    start(s, profile, true);
+}
+
+fn start(s: &mut State, profile: String, default_computer: bool) {
     picker::close(s);
-    open(s);
+    open_on(s, default_computer);
     let catalog = catalog_thread(s);
     crate::chat::model_picker::draft_set_profile(s, profile.clone(), catalog);
     if let Some(draft) = s.workspace.draft.as_mut() {
@@ -612,22 +638,38 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
     )
     .help("Attach files")
     .on_press_tx(pick_files);
-    // Under the heading, no resting underline (T3's pass): a chevron says
-    // it opens. A long name truncates instead of widening the column.
+    // t3code's heading: the profile's name is part of the question and
+    // opens the combobox ("What should we build in <project>?"). Muted at
+    // rest, full ink on hover or while open; a chevron says it opens. A
+    // triage draft keeps its own question, the name small under it.
+    let (name_size, name_weight) = if triage {
+        (SM, REGULAR)
+    } else {
+        (HERO_SIZE, SEMIBOLD)
+    };
     let mut profile_switch = row()
         .key("draft-profile")
         .role("button")
-        .label(format!("Profile: {name}"))
-        .gap(4.)
+        .label(format!("Profile: {name}. Choose a profile"))
+        .help(
+            s.workspace
+                .inbox
+                .profile(&draft.profile)
+                .and_then(|p| p.folder.as_deref())
+                .map(picker::short_folder)
+                .unwrap_or_else(|| "Choose a profile".into()),
+        )
+        .gap(if triage { 4. } else { 6. })
         .center_y()
         .cursor(rune::Cursor::Pointer)
         .hover_group()
-        .max_w(HERO_WIDTH)
+        .max_w(HERO_WIDTH - 120.)
         .min_w(0.)
         .child(
-            t(
+            tw(
                 name,
-                SM,
+                name_size,
+                name_weight,
                 if draft.menu_open {
                     p.text
                 } else {
@@ -638,13 +680,17 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
             .min_w(0.)
             .truncate(),
         )
-        .child(crate::design::kit::chevron(
-            "draft-profile-chevron",
-            draft.menu_open,
-            crate::design::kit::Turn::Flip,
-            12.,
-            p.text_faint,
-        ))
+        // In the question the muted name says it is a choice (t3code has no
+        // chevron there); the small triage line keeps one.
+        .children(triage.then(|| {
+            crate::design::kit::chevron(
+                "draft-profile-chevron",
+                draft.menu_open,
+                crate::design::kit::Turn::Flip,
+                12.,
+                p.text_faint,
+            )
+        }))
         .on_press(picker::toggle_draft_menu);
     if draft.menu_open {
         layer.push(picker::anchored(
@@ -779,8 +825,13 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
             .transition(hero_entrance(s))
             .enter_delay(HERO_STAGGER);
     }
-    // The centred hero: the big question, the project switcher under it,
-    // then the card.
+    // The name sits in the question, or (triage) under it.
+    let (inline_switch, below_switch) = if triage {
+        (None, Some(profile_switch))
+    } else {
+        (Some(profile_switch), None)
+    };
+    // The centred hero: the question naming the profile, then the card.
     let mut body = col()
         .key("draft-body")
         .w_full()
@@ -793,21 +844,32 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
             col()
                 .items_center()
                 .gap(8.)
-                .child(greeting.child(tw(
-                    if triage {
-                        "What went wrong?"
-                    } else {
-                        "What should we work on?"
-                    },
-                    32.,
-                    SEMIBOLD,
-                    p.text,
-                )))
+                .child(if triage {
+                    greeting.child(tw("What went wrong?", HERO_SIZE, SEMIBOLD, p.text))
+                } else {
+                    // One line when it fits; a long name wraps under the
+                    // question, still centred.
+                    greeting.max_w(HERO_WIDTH).child(
+                        row()
+                            .flex_wrap()
+                            .justify_center()
+                            .center_y()
+                            .gap(10.)
+                            .child(tw("What should we work on in", HERO_SIZE, SEMIBOLD, p.text))
+                            .child(
+                                row()
+                                    .min_w(0.)
+                                    .center_y()
+                                    .children(inline_switch)
+                                    .child(tw("?", HERO_SIZE, SEMIBOLD, p.text)),
+                            ),
+                    )
+                })
                 .children(triage.then(|| {
                     el().max_w(HERO_WIDTH)
                         .child(t(super::triage::hero_line(s), SM, p.text_muted).wrap())
                 }))
-                .child(profile_switch),
+                .children(below_switch),
         )
         .child(
             col()

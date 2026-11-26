@@ -165,6 +165,21 @@ pub(crate) fn pick(s: &mut State, key: String) {
     s.workspace.carried_draft = None;
 }
 
+/// Whether opening a fresh draft would move to another, ready computer
+/// (the "New threads start on" preference).
+pub(in crate::workspace) fn default_elsewhere(s: &State) -> bool {
+    if s.workspace.draft.is_some()
+        || s.workspace.carried_draft.is_some()
+        || crate::workspace::triage::is_triage_draft(s)
+    {
+        return false;
+    }
+    default_computer::effective(s).is_some_and(|(key, _)| {
+        key != s.onboarding.computer.key()
+            && peers::get(s, &key).is_some_and(|p| p.conn == PeerConn::Ready)
+    })
+}
+
 /// Check the "New threads start on" preference when opening a fresh draft.
 /// Moves focus when the preferred computer is a ready peer; otherwise stays on
 /// the current computer and returns a one-line note if the preferred computer

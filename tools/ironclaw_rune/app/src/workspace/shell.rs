@@ -433,11 +433,7 @@ mod tests {
         rt.update(|s, tx| {
             s.workspace.field_focused.set(false);
             crate::workspace::window_focus(s, false, tx);
-            s.workspace.command = Some(crate::workspace::command::CommandMenu {
-                input: rune::TextEdit::new(""),
-                selected: 0,
-                opened: 1,
-            });
+            s.workspace.command = Some(crate::workspace::command::CommandMenu::root("", 0, 1));
         });
         rt.update(|s, tx| crate::workspace::window_focus(s, true, tx));
         assert!(!composer(&rt));

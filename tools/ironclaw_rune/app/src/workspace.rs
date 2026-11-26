@@ -128,6 +128,9 @@ pub struct WorkspaceState {
     /// The ⌘K menu while open.
     pub command: Option<command::CommandMenu>,
     pub command_opens: u64,
+    /// The thread last started from the new-thread screen and its profile,
+    /// so "the current profile" knows it before the inbox lists the thread.
+    pub started: Option<(String, String)>,
     /// Message-text search shared by ⌘K and the inbox field.
     pub message_search: message_search::MessageSearch,
     pub quick: quick::Quick,
@@ -187,6 +190,7 @@ impl Default for WorkspaceState {
             default_computer_menu: false,
             command: None,
             command_opens: 0,
+            started: None,
             message_search: Default::default(),
             quick: Default::default(),
             telemetry: None,
@@ -354,7 +358,9 @@ pub(crate) fn connected(
     match reopen.or_else(|| inbox::first_open(s)) {
         Some(first) => open_thread(s, first),
         // Nothing open: a fresh draft in the default profile.
-        None => start_in_profile(s, zlo_client::profiles::DEFAULT_PROFILE_ID.into()),
+        None => {
+            draft::start_on_default_computer(s, zlo_client::profiles::DEFAULT_PROFILE_ID.into())
+        }
     }
 }
 

@@ -140,6 +140,12 @@ pub struct ProfileWriteRequest {
     pub profile_id: String,
     #[serde(flatten)]
     pub settings: ProfileSettings,
+    /// Create only a new profile: an archived profile's id is taken too,
+    /// instead of coming back with these settings (the pickers' "Add
+    /// profile", which names ids itself). Ignored on update; servers from
+    /// before it ignore it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fresh: bool,
 }
 
 /// Create a thread that belongs to `profile_id`.
