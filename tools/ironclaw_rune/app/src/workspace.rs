@@ -1147,6 +1147,7 @@ pub fn window_focus(s: &mut State, focused: bool, tx: &mut Tx) {
         tx.wake_after(Duration::ZERO);
         crate::remote::peers::wake_asleep(s);
         crate::remote::peers::refresh(s);
+        crate::remote::config_sync::window_active(s);
     }
     if !matches!(s.conn, Conn::Ready) {
         return;

@@ -123,6 +123,9 @@ pub struct Prefs {
     /// computer last used; `Some(key)` names a computer (`this-mac` or an
     /// `environment_id`).
     pub default_computer: Option<String>,
+    /// Computers that do not receive This Mac's configuration (Settings →
+    /// Computers); every other paired computer does.
+    pub config_sync_off: Vec<String>,
 }
 
 impl Default for Prefs {
@@ -163,6 +166,7 @@ impl Default for Prefs {
             thread_worktrees: false,
             signal_matrix_picker: false,
             default_computer: None,
+            config_sync_off: Vec::new(),
         }
     }
 }

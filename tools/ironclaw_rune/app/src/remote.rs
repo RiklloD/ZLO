@@ -17,6 +17,7 @@
 //! computer" ([`needs_computer`]). Plan:
 //! `docs/internal/plans/2026-11-08-zlo-remote-environments.md`.
 
+pub mod config_sync;
 pub(crate) mod connect;
 pub(crate) mod failback;
 pub mod inbox_stream;
@@ -91,6 +92,8 @@ pub struct RemoteState {
     pub pending_thread: Option<PendingThread>,
     /// The inbox push streams open now (`inbox_stream`).
     pub inbox_streams: inbox_stream::InboxStreams,
+    /// Configuration sync from This Mac to the others (`config_sync`).
+    pub config_sync: config_sync::ConfigSync,
     /// Bumped by every explicit move of the focus (`peers::focus`,
     /// `peers::focus_thread`): a deferred handover runs only while it is
     /// still the latest one asked. Connect retries do not touch it.
@@ -157,6 +160,7 @@ impl Default for RemoteState {
             last_thread: HashMap::new(),
             pending_thread: None,
             inbox_streams: Default::default(),
+            config_sync: config_sync::ConfigSync::default(),
             navigation: Default::default(),
             switching: None,
             page: Default::default(),

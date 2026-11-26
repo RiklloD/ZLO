@@ -10,6 +10,7 @@ pub mod attachments;
 mod backend;
 pub mod commands;
 pub mod computer_use;
+pub mod config_sync;
 mod connection;
 pub mod environment_calls;
 pub mod environments;

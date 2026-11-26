@@ -217,3 +217,15 @@ pub fn both_connected(s: &mut State) {
         ),
     ));
 }
+
+/// Both connected, and Studio has This Mac's settings (`restart`: some of
+/// them wait for its IronClaw to restart).
+pub fn synced(s: &mut State, restart: bool) {
+    use crate::remote::config_sync::Phase;
+    both_connected(s);
+    let waiting: &[&str] = if restart { &["budget", "llm"] } else { &[] };
+    s.remote
+        .config_sync
+        .set_fixture(STUDIO, Phase::Matches, waiting);
+    s.prefs.config_sync_off = vec![MINI.into()];
+}
