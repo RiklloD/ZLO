@@ -60,6 +60,8 @@ pub struct DraftState {
     /// the default ([`in_worktree`]): Local, unless Settings → Worktrees
     /// starts git-folder profiles' threads in their own worktree.
     pub worktree: Option<bool>,
+    /// The Local / New worktree menu under the card is open.
+    pub worktree_open: bool,
     /// Bumped when the draft is replaced, so a late attach lands nowhere.
     pub generation: Generation,
     /// Not drawn yet: the hero's greeting, profile switch and composer
@@ -311,6 +313,7 @@ pub fn start_in_profile(s: &mut State, profile: String) {
     if let Some(draft) = s.workspace.draft.as_mut() {
         draft.profile = profile;
         draft.menu_open = false;
+        draft.worktree_open = false;
         // The switch follows the new profile's folder again.
         draft.worktree = None;
     }
@@ -609,44 +612,6 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
     )
     .help("Attach files")
     .on_press_tx(pick_files);
-    let worktree_on = in_worktree(s, draft);
-    let place = row()
-        .key("draft-worktree")
-        .role("button")
-        .px(8.)
-        .h(28.)
-        .gap(4.)
-        .center_y()
-        .radius(crate::design::CONTROL_RADIUS)
-        .hover(p.hover)
-        .cursor(rune::Cursor::Pointer)
-        .hover_group()
-        .help(if worktree_on {
-            "Runs in its own git worktree, on a new branch made from main (committed work only)"
-        } else {
-            "Works in the project folder itself, on whatever branch it has checked out"
-        })
-        .child(ui::glyph(
-            &icons::GIT_BRANCH,
-            12.,
-            if worktree_on { p.text } else { p.text_faint },
-        ))
-        .child(
-            t(
-                if worktree_on { "New worktree" } else { "Local" },
-                XS,
-                if worktree_on { p.text } else { p.text_faint },
-            )
-            .group_color(p.text),
-        )
-        .on_press(|s: &mut State| {
-            let Some(on) = s.workspace.draft.as_ref().map(|d| in_worktree(s, d)) else {
-                return;
-            };
-            if let Some(d) = s.workspace.draft.as_mut() {
-                d.worktree = Some(!on);
-            }
-        });
     // Under the heading, no resting underline (T3's pass): a chevron says
     // it opens. A long name truncates instead of widening the column.
     let mut profile_switch = row()
@@ -737,7 +702,6 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
         .gap(6.)
         .center_y()
         .children(runs_on::control(s, k, layer))
-        .child(place)
         .child(attach_button)
         .child(crate::voice::ui::composer_controls(
             s,
@@ -774,8 +738,13 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
     // dock to come from (or a wallpaper, which swaps it in place) it rises
     // in last.
     let flies_in = s.chat.is_some() && !crate::design::wallpaper::covers_composer(&s.prefs);
+    // Under the card, where the thread will work (t3code's line).
+    let mut place = place_bar(s, k, layer);
     if fresh && !flies_in {
         card = card
+            .transition(hero_entrance(s))
+            .enter_delay(2. * HERO_STAGGER);
+        place = place
             .transition(hero_entrance(s))
             .enter_delay(2. * HERO_STAGGER);
     }
@@ -840,7 +809,16 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
                 }))
                 .child(profile_switch),
         )
-        .child(card);
+        .child(
+            col()
+                .key("draft-composer-stack")
+                .w_full()
+                .max_w(HERO_WIDTH)
+                .items_center()
+                .gap(4.)
+                .child(card)
+                .child(place),
+        );
     if let Some(error) = draft.error.clone() {
         body = body.child(el().max_w(HERO_WIDTH).child(t(error, SM, p.danger).wrap()));
     }
@@ -877,10 +855,110 @@ pub(super) fn view(s: &State, cx: &mut Cx<State>, k: &Kit, layer: &mut Vec<El>) 
     root.child(body)
 }
 
+/// The line under the draft's card: the Local / New worktree menu on the
+/// left (when the thread could have a worktree: its profile's folder is a
+/// git checkout, or a project folder was used), the branch on the right.
+fn place_bar(s: &State, k: &Kit, layer: &mut Vec<El>) -> El {
+    use crate::chat::place_bar;
+    let Some(draft) = s.workspace.draft.as_ref() else {
+        return el();
+    };
+    let p = &s.palette;
+    let profile = s.workspace.inbox.profile(&draft.profile);
+    let branch = profile.and_then(|p| p.git_branch.clone());
+    let can_branch = branch.is_some() || s.prefs.last_project.is_some();
+    let on = in_worktree(s, draft);
+    let blocked = crate::chat::model_picker::draft_no_worktrees(&draft.picker);
+    let left = can_branch.then(|| {
+        let open = draft.worktree_open;
+        let (glyph, label) = if on {
+            (&icons::GIT_BRANCH_PLUS, "New worktree")
+        } else {
+            (&icons::MONITOR, "Local")
+        };
+        let ink = if open { p.text } else { p.text_faint };
+        let trigger = row()
+            .key("draft-worktree")
+            .role("button")
+            .label(format!("Works in: {label}"))
+            .h(place_bar::HEIGHT)
+            .px(6.)
+            .ml(-6.)
+            .gap(6.)
+            .center_y()
+            .radius(crate::design::CONTROL_RADIUS)
+            .hover(p.hover)
+            .cursor(rune::Cursor::Pointer)
+            .hover_group()
+            .help("Where the new thread works")
+            .child(ui::glyph(glyph, 13., ink).group_color(p.text))
+            .child(t(label, XS, ink).group_color(p.text))
+            .child(ui::glyph(&icons::CHEVRON_DOWN, 11., p.text_faint))
+            .on_press(|s: &mut State| {
+                if let Some(d) = s.workspace.draft.as_mut() {
+                    d.worktree_open = !d.worktree_open;
+                }
+            });
+        rune_kit::Menu::new("draft-worktree")
+            .trigger(trigger)
+            .open(open)
+            .placement(rune_kit::Placement::BottomStart)
+            .min_width(250.)
+            .on_close(|s: &mut State| {
+                if let Some(d) = s.workspace.draft.as_mut() {
+                    d.worktree_open = false;
+                }
+            })
+            .item(
+                rune_kit::MenuItem::new("Local")
+                    .description("In the project folder")
+                    .icon(&icons::MONITOR)
+                    .checked(!on)
+                    .on_select(|s: &mut State| set_worktree(s, false)),
+            )
+            .item({
+                let item = rune_kit::MenuItem::new("New worktree")
+                    .icon(&icons::GIT_BRANCH_PLUS)
+                    .checked(on)
+                    .disabled(blocked.is_some())
+                    .on_select(|s: &mut State| set_worktree(s, true));
+                match &blocked {
+                    Some(name) => item.description(format!("{name} can't run in a worktree")),
+                    None => item.description("Its own new branch, from main"),
+                }
+            })
+            .build(k, layer)
+    });
+    // A new worktree gets its own branch, made from the default branch.
+    let right = if on {
+        Some(
+            place_bar::item(s, "draft-branch", &icons::GIT_BRANCH, "New branch")
+                .help("The worktree gets its own new branch, made from the default branch (committed work only)"),
+        )
+    } else {
+        branch.map(|b| place_bar::branch_item(s, "draft-branch", &b))
+    };
+    place_bar::bar("draft-place", HERO_WIDTH, left, right)
+}
+
+/// The Local / New worktree menu's pick.
+pub(super) fn set_worktree(s: &mut State, on: bool) {
+    if let Some(d) = s.workspace.draft.as_mut() {
+        d.worktree = Some(on);
+        d.worktree_open = false;
+    }
+}
+
 /// Whether `draft` starts its thread in a new worktree: as switched, else
 /// when the Worktrees setting is on and its profile's folder is a git
-/// checkout (the profile reports a branch).
+/// checkout (the profile reports a branch); never on a model that cannot
+/// run in one.
 pub(super) fn in_worktree(s: &State, draft: &DraftState) -> bool {
+    // A model whose runtime cannot run there works Local, whatever the
+    // switch says (the menu says why).
+    if crate::chat::model_picker::draft_no_worktrees(&draft.picker).is_some() {
+        return false;
+    }
     draft.worktree.unwrap_or_else(|| {
         s.prefs.thread_worktrees
             && s.workspace
@@ -903,6 +981,7 @@ pub(super) fn empty_draft(profile: &str) -> DraftState {
         sending: false,
         error: None,
         worktree: None,
+        worktree_open: false,
         generation: Generation::default(),
         fresh: true,
         send_tint: Default::default(),

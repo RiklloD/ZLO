@@ -44,6 +44,8 @@ pub(crate) struct FakeRuntime {
     pub(crate) session: Arc<tokio::sync::Mutex<()>>,
     /// Each started turn's recalled memory (`TurnInput::memory`).
     pub(crate) memories: Mutex<Vec<Option<RecalledMemory>>>,
+    /// Runs turns in a worktree (`supports_work_dir`).
+    pub(crate) work_dir: bool,
 }
 
 impl FakeRuntime {
@@ -91,6 +93,9 @@ fn msg(role: HistoryRole, text: &str) -> HistoryMessage {
 impl TurnRuntime for FakeRuntime {
     fn id(&self) -> RuntimeId {
         RuntimeId::new(self.name.unwrap_or("fake")).unwrap()
+    }
+    fn supports_work_dir(&self) -> bool {
+        self.work_dir
     }
     async fn catalog(&self, _scope: &ThreadScope) -> Result<Vec<CatalogProvider>, RuntimeError> {
         Ok(self
@@ -1605,6 +1610,9 @@ async fn an_effort_pick_rides_the_route_and_a_switch_keeps_only_its_own() {
         .find(|p| p["provider"] == "cli")
         .unwrap();
     assert_eq!(cli_row["efforts"], serde_json::json!(["low", "high"]));
+    // The new-thread screen offers a worktree only on a runtime that can
+    // run there.
+    assert_eq!(cli_row["worktrees"], false);
     assert_eq!(
         cli_row["modelEfforts"],
         serde_json::json!({ "m2": ["low"] })
@@ -2226,4 +2234,33 @@ async fn cli_turns_get_recalled_memory_and_their_exchange_is_captured() {
     .await;
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     assert_eq!(memory.captured.lock().unwrap().len(), 1);
+}
+
+/// Each provider in the catalog says whether its runtime can run a thread
+/// in its own worktree, so the new-thread screen offers one only there
+/// (a runtime that cannot is refused `worktree_unavailable` after the
+/// thread exists).
+#[tokio::test]
+async fn the_catalog_says_which_providers_can_run_in_a_worktree() {
+    let h = harness().await;
+    h.engine.register_runtime(Arc::new(FakeRuntime {
+        name: Some("cli"),
+        work_dir: true,
+        ..Default::default()
+    }));
+    h.engine.register_runtime(Arc::new(FakeRuntime {
+        name: Some("plain"),
+        ..Default::default()
+    }));
+    let view = h.engine.providers_view(&scope()).await.unwrap();
+    let worktrees = |name: &str| {
+        view["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["provider"] == name)
+            .map(|p| p["worktrees"].clone())
+    };
+    assert_eq!(worktrees("cli"), Some(serde_json::json!(true)));
+    assert_eq!(worktrees("plain"), Some(serde_json::json!(false)));
 }

@@ -224,6 +224,33 @@ pub fn history(s: &mut State) {
     });
 }
 
+/// A thread in its own git worktree, docks closed: the composer's place
+/// line names the worktree folder and its branch.
+pub fn worktree_place(s: &mut State) {
+    base(s, None, None, |x| {
+        let path = "/Users/you/.zlo/worktrees/3f9a/port-the-frontend-60f1b999";
+        x.worktree = Some(zlo_client::orchestration::WorktreeView {
+            path: path.into(),
+            branch: "zlo/port-the-frontend-60f1b999".into(),
+            state: "active".into(),
+            exists: true,
+            ..Default::default()
+        });
+        x.folder = Some(PathBuf::from(path));
+        x.head = Some("zlo/port-the-frontend-60f1b999".into());
+    });
+    s.prefs.work_open = false;
+}
+
+/// A thread working in its project folder itself, on `main`.
+pub fn local_place(s: &mut State) {
+    base(s, None, None, |x| {
+        x.folder = Some(PathBuf::from("/Users/you/code/zlo"));
+        x.head = Some("main".into());
+    });
+    s.prefs.work_open = false;
+}
+
 pub fn no_folder(s: &mut State) {
     base(s, None, Some(Tab::Console), |_| {});
 }

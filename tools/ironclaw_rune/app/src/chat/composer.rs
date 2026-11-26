@@ -384,8 +384,15 @@ pub(crate) fn view(
     );
     // The new-thread composer flies down to this dock and back on
     // `motion::DOCK` (`dock_matched`).
+    // Under the main chat's card, the line saying where it works (t3code's).
     match chat.embedded {
-        false => dock_matched(s, card),
+        false => col()
+            .key("composer-stack")
+            .w_full()
+            .max_w(super::content_width(s))
+            .gap(4.)
+            .child(dock_matched(s, card))
+            .children(super::place_bar::chat_bar(s, super::content_width(s))),
         true => card,
     }
 }

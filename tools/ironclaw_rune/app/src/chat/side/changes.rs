@@ -209,6 +209,7 @@ pub(super) fn refresh(s: &mut State) {
             let Some(x) = side_of(s, &thread).filter(|x| x.folder_gen == generation) else {
                 return;
             };
+            x.head = Some(loaded.branch.name.clone());
             let state = &mut x.changes;
             state.loading = false;
             state.loaded = true;

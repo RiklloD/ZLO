@@ -164,6 +164,7 @@ pub const SCENES: &[Scene] = &[
     ("draft-files", ws::fixture_draft_files),
     ("draft-mention", ws::fixture_draft_mention),
     ("draft-runs-on", ws::fixture_draft_runs_on),
+    ("draft-worktree-menu", ws::fixture_draft_worktree_menu),
     ("draft-runs-on-menu", ws::fixture_draft_runs_on_menu),
     ("computers-default-pref", |s| {
         page_with(s, Page::Computers, ws::fixture_computers_default_pref)
@@ -315,6 +316,11 @@ pub const SCENES: &[Scene] = &[
     ("settings-nav", ws::fixture_settings_nav),
     ("shell", ws::fixture_shell),
     ("side-activity", crate::chat::side::fixtures::activity),
+    ("chat-place-local", crate::chat::side::fixtures::local_place),
+    (
+        "chat-place-worktree",
+        crate::chat::side::fixtures::worktree_place,
+    ),
     ("side-agents", crate::chat::side::fixtures::agents),
     ("side-browser", crate::chat::side::fixtures::browser),
     ("side-changes", crate::chat::side::fixtures::changes),

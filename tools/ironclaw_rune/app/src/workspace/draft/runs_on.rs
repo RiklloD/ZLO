@@ -56,8 +56,7 @@ pub(super) enum DefaultOutcome {
     Stay(Option<String>),
 }
 
-/// The "Runs on" control for the draft composer's action row, next to the
-/// worktree control and in its exact style. Hidden when only one computer is
+/// The "Runs on" control for the draft composer's action row. Hidden when only one computer is
 /// usable (single-computer view stays pixel-identical).
 pub(super) fn control(s: &State, k: &Kit, layer: &mut Vec<El>) -> Option<El> {
     let choices = peers::usable(s);

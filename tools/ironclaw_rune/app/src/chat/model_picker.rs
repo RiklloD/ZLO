@@ -833,6 +833,8 @@ pub fn fixture() -> ModelPickerState {
             model_efforts: Default::default(),
             brand: None,
             launch: None,
+            // As the gateway reports it: only the Claude CLI runs there.
+            worktrees: Some(runtime == "claude-cli"),
         };
     let route = ThreadRoute {
         thread_id: "t1".into(),
@@ -913,6 +915,7 @@ pub fn fixture_matrix() -> ModelPickerState {
                 model_efforts: Default::default(),
                 brand: None,
                 launch: None,
+                worktrees: Some(runtime == "claude-cli"),
             }
         };
     // Mirrors a real catalog: CLI and IronClaw providers, several hidden
@@ -1069,6 +1072,20 @@ pub fn draft_pill(
 
 pub fn pending(picker: &ModelPickerState) -> Option<(String, String)> {
     picker.pending()
+}
+
+/// The provider the draft shows, when the gateway says its threads cannot
+/// run in a worktree: its name. `None` when they can, or nobody said.
+pub fn draft_no_worktrees(picker: &ModelPickerState) -> Option<String> {
+    let (provider, _) = picker.current.as_ref()?;
+    picker
+        .route
+        .as_ref()?
+        .providers
+        .iter()
+        .find(|p| &p.provider == provider)
+        .filter(|p| p.worktrees == Some(false))
+        .map(|p| p.name.clone())
 }
 
 pub fn pending_effort(picker: &ModelPickerState) -> Option<String> {

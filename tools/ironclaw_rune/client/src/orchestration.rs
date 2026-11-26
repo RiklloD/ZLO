@@ -844,6 +844,9 @@ pub struct RouteProvider {
     /// Which agent program a CLI runtime found, when it can be one of
     /// several (Antigravity's `agy` or its legacy ACP runtime).
     pub launch: Option<CatalogLaunch>,
+    /// A thread on this provider can run in its own git worktree; `None`
+    /// from a gateway that does not say.
+    pub worktrees: Option<bool>,
 }
 
 /// The agent program behind a CLI runtime row (the gateway's

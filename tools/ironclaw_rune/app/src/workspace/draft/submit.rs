@@ -2,6 +2,7 @@
 //! [`Submission`] fixed at Enter, and its reply only clears the draft it came
 //! from while that draft is unedited.
 
+use zlo_client::ClientError;
 use zlo_client::attachments::StagedFile;
 
 use super::{DraftState, inbox, record};
@@ -159,29 +160,7 @@ pub(super) fn submit(s: &mut State, sub: Submission, voice: Option<crate::voice:
     jobs::run(
         s,
         "new thread",
-        move |c| async move {
-            let id = match c.create_profile_thread(&profile).await {
-                Ok(created) => created.thread_id,
-                // A gateway without profiles creates a plain thread.
-                Err(e) if e.is_not_found() => c.create_thread().await?.thread.thread_id,
-                Err(e) => return Err(e),
-            };
-            match (pick, effort) {
-                (Some((provider, model)), effort) => {
-                    c.set_thread_route(&id, &provider, &model, effort.as_deref())
-                        .await?;
-                }
-                (None, Some(effort)) => {
-                    c.set_thread_effort(&id, &effort).await?;
-                }
-                (None, None) => {}
-            }
-            // Made before the first message, so every turn runs there.
-            if let Some(source) = worktree {
-                c.start_thread_worktree(&id, source.as_deref()).await?;
-            }
-            Ok(id)
-        },
+        move |c| async move { create(&c, &profile, pick, effort, worktree).await },
         move |s, result, tx| match result {
             Ok(id) => {
                 // The person sent it: this reply is a queued update, which
@@ -213,6 +192,59 @@ pub(super) fn submit(s: &mut State, sub: Submission, voice: Option<crate::voice:
             }
         },
     );
+}
+
+/// Create the thread on the gateway: in `profile`, on the picked route, in
+/// its own worktree when `worktree` asks for one (`Some(source)`, `None`
+/// source: the profile's folder). Answers its id.
+///
+/// A worktree the backend refuses (the model's runtime cannot run in one,
+/// the folder is not a git checkout) fails the send, and the thread made
+/// for it, still empty, is taken back: no blank thread is left in the
+/// sidebar, and the draft keeps its text to send again.
+async fn create(
+    c: &zlo_client::Client,
+    profile: &str,
+    pick: Option<(String, String)>,
+    effort: Option<String>,
+    worktree: Option<Option<String>>,
+) -> Result<String, ClientError> {
+    let id = match c.create_profile_thread(profile).await {
+        Ok(created) => created.thread_id,
+        // A gateway without profiles creates a plain thread.
+        Err(e) if e.is_not_found() => c.create_thread().await?.thread.thread_id,
+        Err(e) => return Err(e),
+    };
+    match (pick, effort) {
+        (Some((provider, model)), effort) => {
+            c.set_thread_route(&id, &provider, &model, effort.as_deref())
+                .await?;
+        }
+        (None, Some(effort)) => {
+            c.set_thread_effort(&id, &effort).await?;
+        }
+        (None, None) => {}
+    }
+    // Made before the first message, so every turn runs there.
+    if let Some(source) = worktree
+        && let Err(e) = c.start_thread_worktree(&id, source.as_deref()).await
+    {
+        if let Err(gone) = c.delete_thread(&id).await {
+            tracing::debug!(error = %gone, "empty thread not taken back");
+        }
+        return Err(match e {
+            ClientError::Refused { code, .. } if code == "worktree_unavailable" => {
+                ClientError::Refused {
+                    code,
+                    message: "This model can't run in its own worktree. Switch to Local, \
+                              or pick a model that can."
+                        .into(),
+                }
+            }
+            e => e,
+        });
+    }
+    Ok(id)
 }
 
 /// The draft once `sub`'s thread was created (`error` `None`) or failed.
@@ -291,6 +323,106 @@ mod tests {
             d.staged.clone(),
             origin,
         )
+    }
+
+    /// The Local / New worktree menu under the card decides where the new
+    /// thread works: Local sends no worktree; New worktree branches from the
+    /// profile's own git folder (the backend's default source), or, for a
+    /// profile without one, from the last project folder used.
+    #[test]
+    fn the_worktree_menu_decides_where_the_thread_works() {
+        use crate::workspace::draft::set_worktree;
+        let mut s = with_draft("hello");
+        crate::workspace::fixtures::fixture_inbox(&mut s);
+        s.workspace.draft = Some({
+            let mut d = empty_draft("work");
+            d.input.replace_text("hello");
+            d
+        });
+        assert_eq!(sent(&s).worktree, None, "Local by default");
+        set_worktree(&mut s, true);
+        assert_eq!(sent(&s).worktree, Some(None), "from the profile's folder");
+        set_worktree(&mut s, false);
+        assert_eq!(sent(&s).worktree, None, "back to Local");
+
+        // A model whose runtime the gateway says cannot run in a worktree
+        // sends Local, whatever the switch says; Claude CLI can.
+        set_worktree(&mut s, true);
+        if let Some(d) = s.workspace.draft.as_mut() {
+            d.picker = crate::chat::model_picker::fixture_matrix();
+            d.picker.current = Some(("codex".into(), "gpt-6.1-sol".into()));
+        }
+        assert_eq!(sent(&s).worktree, None, "Codex: Local");
+        if let Some(d) = s.workspace.draft.as_mut() {
+            d.picker.current = Some(("claude-cli".into(), "claude-opus-5-5".into()));
+        }
+        assert_eq!(sent(&s).worktree, Some(None), "Claude CLI: its worktree");
+        if let Some(d) = s.workspace.draft.as_mut() {
+            d.picker = Default::default();
+        }
+
+        s.prefs.last_project = Some("/Users/you/code/site".into());
+        s.workspace.draft = Some({
+            let mut d = empty_draft("default");
+            d.input.replace_text("hello");
+            d
+        });
+        set_worktree(&mut s, true);
+        assert_eq!(
+            sent(&s).worktree,
+            Some(Some("/Users/you/code/site".into())),
+            "no git folder of its own: the last project folder"
+        );
+    }
+
+    /// A worktree the backend refuses (the model's runtime cannot run in
+    /// one) fails the send with a plain reason, and the thread made for it
+    /// is deleted again, so no empty thread is left behind; a Local send
+    /// never asks for a worktree.
+    #[test]
+    fn a_refused_worktree_takes_the_empty_thread_back() {
+        use crate::test_gateway::{Answer, Gateway};
+        let gateway = Gateway::start(vec![Answer::ok("{}")]);
+        gateway.route(
+            "/profiles/work/threads",
+            Answer::ok(r#"{"profile_id":"work","thread_id":"t9"}"#),
+        );
+        gateway.route(
+            "/threads/t9/worktree",
+            Answer::ok(
+                r#"{"ok":false,"error":"worktree_unavailable","message":"Runtime ironclaw cannot run a thread in a worktree (t3_capabilities)."}"#,
+            ),
+        );
+        // The backend owns a runtime of its own: it must drop outside this one.
+        let backend = gateway.backend();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let c = backend.client();
+
+        let refused = rt.block_on(create(c, "work", None, None, Some(None)));
+        let Err(ClientError::Refused { code, message }) = refused else {
+            panic!("refused: {refused:?}")
+        };
+        assert_eq!(code, "worktree_unavailable");
+        assert!(message.starts_with("This model can't run in its own worktree"));
+        assert!(!message.contains("t3_capabilities"), "{message}");
+        assert_eq!(gateway.requests_to("/threads/t9/worktree"), 1);
+        assert_eq!(
+            gateway.requests_to("/threads/t9"),
+            1,
+            "the empty thread is deleted"
+        );
+
+        let local = rt.block_on(create(c, "work", None, None, None));
+        assert_eq!(local.ok().as_deref(), Some("t9"));
+        assert_eq!(
+            gateway.requests_to("/threads/t9/worktree"),
+            1,
+            "Local asks none"
+        );
+        assert_eq!(gateway.requests_to("/threads/t9"), 1, "and deletes nothing");
     }
 
     #[test]
