@@ -89,6 +89,58 @@ impl CliBridge {
     }
 }
 
+/// One turn's token for the loopback MCP route, revoked when the turn drops
+/// it. For drivers that hand the route to a CLI per turn (Codex).
+pub struct TurnMcpToken {
+    bridge: Arc<CliBridge>,
+    url: String,
+    token: String,
+}
+
+impl TurnMcpToken {
+    /// `None` without a bridge, or before the gateway reported its URL.
+    pub fn mint(
+        bridge: Option<&Arc<CliBridge>>,
+        thread: &ironclaw_host_api::ids::ThreadId,
+        run_id: &str,
+    ) -> Option<Self> {
+        let bridge = bridge?;
+        let url = bridge.mcp_url()?.to_string();
+        let token = bridge.mint_token(
+            SessionGrant {
+                thread_id: thread.clone(),
+                run_id: run_id.to_string(),
+            },
+            crate::bridge::SESSION_TOKEN_TTL,
+        );
+        Some(Self {
+            bridge: Arc::clone(bridge),
+            url,
+            token,
+        })
+    }
+
+    /// Codex's `config` override for the route: one streamable-HTTP MCP
+    /// server under `mcp_servers.<name>`, merged into the user's own.
+    pub fn codex_config(&self) -> Value {
+        let mut config = serde_json::Map::new();
+        config.insert(
+            format!("mcp_servers.{}", crate::bridge::MCP_SERVER_NAME),
+            json!({
+                "url": self.url,
+                "http_headers": {"Authorization": format!("Bearer {}", self.token)},
+            }),
+        );
+        Value::Object(config)
+    }
+}
+
+impl Drop for TurnMcpToken {
+    fn drop(&mut self) {
+        self.bridge.revoke_token(&self.token);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;

@@ -12,7 +12,10 @@
 //! known-safe read-only commands asks first, and every request becomes an
 //! IronClaw approval through [`crate::permissions::decide`] (allow once or
 //! decline; never "for session"). Without a bridge the sandbox is
-//! read-only and nothing is asked. Codex's own subagents (`multi_agent`)
+//! read-only and nothing is asked. With a bridge, each turn also gets the
+//! bridge's loopback MCP route (orchestrator, history, memory and computer
+//! use tools) through a per-turn `config` override and token; Codex's ask
+//! before each of those calls is answered yes. Codex's own subagents (`multi_agent`)
 //! are disabled: subagents are orchestrator threads (`t3_delegate`).
 //!
 //! While a turn runs, reply and reasoning-summary deltas, tool rows with
@@ -50,6 +53,7 @@ use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, watch};
 
 use crate::bridge::CliBridge;
+use crate::bridge_tools::TurnMcpToken;
 use crate::journal;
 use crate::permissions::{self, PermissionDecision, PermissionRequest};
 use crate::rpc::{self, Inbound, RpcClient, RpcError};
@@ -674,7 +678,10 @@ impl Turn {
         unread: &mut Settled,
     ) -> (TurnOutcome, Telemetry) {
         let mut fold = TurnFold::default();
-        let codex_thread = match self.open(&client, &mut fold).await {
+        // The bridge's tools (orchestrator, history, memory, computer use)
+        // for this turn only: revoked when `drive` returns.
+        let mcp = TurnMcpToken::mint(self.bridge.as_ref(), &self.thread_id, &self.run_id);
+        let codex_thread = match self.open(&client, &mut fold, mcp.as_ref()).await {
             Ok(id) => id,
             Err(error) => return (open_failed(&error), None),
         };
@@ -904,7 +911,12 @@ impl Turn {
 
     /// `initialize`, then resume the saved Codex thread or start one, in
     /// the sandbox and approval policy above. Returns the Codex thread id.
-    async fn open(&self, client: &RpcClient, fold: &mut TurnFold) -> Result<String, RpcError> {
+    async fn open(
+        &self,
+        client: &RpcClient,
+        fold: &mut TurnFold,
+        mcp: Option<&TurnMcpToken>,
+    ) -> Result<String, RpcError> {
         let (id, model) = open_session(
             client,
             &self.config,
@@ -912,6 +924,7 @@ impl Turn {
             &self.cwd,
             self.model.as_deref(),
             self.policy(),
+            mcp,
         )
         .await?;
         fold.model = model;
@@ -921,6 +934,13 @@ impl Turn {
     /// Server requests: approvals go through the shared seam; everything a
     /// person would have to answer mid-turn is declined.
     fn answer_request(&self, client: &RpcClient, id: Value, method: &str, params: &Value) {
+        if own_tool_call(method, params) {
+            let sent = client.respond(&id, json!({"action": "accept", "content": {}}));
+            if let Err(error) = sent {
+                tracing::debug!(error = %error.label(), "codex: tool-call approval not sent");
+            }
+            return;
+        }
         if plan::answer_question(
             self.bridge.as_ref(),
             client,
@@ -1036,6 +1056,7 @@ async fn open_session(
     cwd: &Path,
     model: Option<&str>,
     (approval, sandbox): (&str, &str),
+    mcp: Option<&TurnMcpToken>,
 ) -> Result<(String, Option<String>), RpcError> {
     handshake(client).await?;
     let cwd = canonical(cwd);
@@ -1048,6 +1069,9 @@ async fn open_session(
     });
     if let Some(model) = model {
         params["model"] = json!(model);
+    }
+    if let Some(mcp) = mcp {
+        params["config"] = mcp.codex_config();
     }
     let result = match &saved {
         Some(id) => {
@@ -1097,6 +1121,20 @@ async fn saved_thread(config: &CodexConfig, session: &str) -> Option<String> {
         .ok() // silent-ok: no file means the session has not started yet
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+/// Codex asks before every MCP tool call (an elicitation of kind
+/// `mcp_tool_call`). ZLO's own route (this turn's token, the thread
+/// owner's tools only, each with its own checks behind it) is answered yes,
+/// as Claude Code runs it without asking; any other server's ask is still
+/// put to the person as a question (`plan.rs`).
+fn own_tool_call(method: &str, params: &Value) -> bool {
+    method == "mcpServer/elicitation/request"
+        && params.get("serverName").and_then(Value::as_str) == Some(crate::bridge::MCP_SERVER_NAME)
+        && params["_meta"]
+            .get("codex_approval_kind")
+            .and_then(Value::as_str)
+            == Some("mcp_tool_call")
 }
 
 /// `(approval policy, sandbox)`: with a bridge to ask, the workspace
