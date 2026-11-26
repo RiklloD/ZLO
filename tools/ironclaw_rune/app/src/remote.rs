@@ -352,6 +352,9 @@ pub fn save_registry(s: &mut State) -> Result<(), String> {
 /// unreadable computers list is set aside (`environments.json.unreadable`)
 /// and a fresh one started; a `gateway.json` computer stays to be moved.
 pub fn use_this_mac(s: &mut State) {
+    // An explicit pick: a handover still queued for an earlier one is over.
+    s.remote.navigation.bump();
+    s.remote.pending_thread = None;
     if s.remote.registry_error.take().is_some()
         && let Some(path) = registry_path()
     {

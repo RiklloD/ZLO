@@ -52,6 +52,8 @@ pub(super) enum Link {
 
 #[derive(Clone)]
 struct Carried {
+    /// The computer it is leaving.
+    from: String,
     profile: String,
     text: String,
     pills: Vec<(Range<usize>, String)>,
@@ -158,6 +160,7 @@ pub(super) fn carry(s: &mut State) {
         return;
     };
     t.carried = Some(Carried {
+        from: s.onboarding.computer.key(),
         profile: d.profile.clone(),
         text: d.input.text.clone(),
         pills: inline_files::pills(&d.input),
@@ -185,6 +188,19 @@ pub(super) fn connected(s: &mut State) -> bool {
         }
         return false;
     };
+    // The triage draft takes this computer's new-thread slot. A draft that
+    // was waiting here goes to the slot the triage draft left (a swap), so
+    // it is not overwritten; with none waiting, the triage draft's old copy
+    // goes, so going back does not bring a second one.
+    let here = s.onboarding.computer.key();
+    if carried.from != here {
+        match crate::drafts::restore(s, crate::drafts::NEW_THREAD) {
+            Some(waiting) => {
+                crate::drafts::record_for(s, &carried.from, crate::drafts::NEW_THREAD, waiting)
+            }
+            None => crate::drafts::remove_for(s, &carried.from, crate::drafts::NEW_THREAD),
+        }
+    }
     let generation = draft::restore(
         s,
         carried.profile,

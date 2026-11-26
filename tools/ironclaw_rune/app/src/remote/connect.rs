@@ -134,6 +134,8 @@ pub fn refresh(s: &mut State) {
 /// the new one answers; a failure leaves it in place with the reason on the
 /// Computers page.
 pub fn switch_to(s: &mut State, target: Active) {
+    // An explicit pick: a handover still queued for an earlier one is over.
+    s.remote.navigation.bump();
     if s.remote.registry.active == target && !s.remote.legacy_active && s.remote.switching.is_none()
     {
         if !matches!(s.conn, Conn::Ready) {

@@ -939,3 +939,45 @@ fn a_moved_drafts_local_file_is_read_for_the_other_computer() {
     let saved = crate::drafts::restore(&s, crate::drafts::NEW_THREAD).expect("saved");
     assert!(saved.files.iter().all(|f| f.bytes().is_some()));
 }
+
+/// A triage draft follows the focus (Settings → Computers → "Switch to").
+/// A draft that was waiting on the computer it lands on is not overwritten:
+/// it goes to the slot the triage draft left.
+#[test]
+fn a_triage_draft_following_the_focus_keeps_the_waiting_draft() {
+    let (mut s, _pump, _mac_gw, _studio_gw) = two_gateways(&[("default", "Default")], vec![]);
+
+    peers::focus(&mut s, "studio");
+    crate::workspace::draft::open(&mut s);
+    if let Some(d) = s.workspace.draft.as_mut() {
+        d.input.replace_text("Studio waiting draft");
+    }
+    crate::workspace::draft::record(&mut s);
+
+    peers::focus(&mut s, "mac");
+    crate::workspace::triage_test::start(&mut s);
+    assert!(crate::workspace::triage::is_triage_draft(&s));
+    assert!(
+        control_hidden(&s),
+        "a triage draft offers no Runs on control: it does not move by that route"
+    );
+
+    peers::focus(&mut s, "studio");
+
+    assert_eq!(s.onboarding.computer.key(), "studio");
+    assert!(crate::workspace::triage::is_triage_draft(&s));
+    peers::focus(&mut s, "mac");
+    assert_eq!(
+        crate::drafts::restore(&s, crate::drafts::NEW_THREAD)
+            .map(|d| d.text)
+            .as_deref(),
+        Some("Studio waiting draft"),
+        "the waiting draft moved to the slot the triage draft left"
+    );
+}
+
+fn control_hidden(s: &State) -> bool {
+    let k = crate::design::kit(&s.palette);
+    let mut layer = Vec::new();
+    control(s, &k, &mut layer).is_none()
+}

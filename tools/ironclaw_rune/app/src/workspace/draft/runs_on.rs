@@ -339,16 +339,48 @@ pub(super) fn restage_for_remote(s: &mut State) {
     let limits = session.attachments.clone();
     let check = limits.clone();
     let generation = draft.generation;
+    // What already uploads counts against the message's budget, and a file
+    // is read only while the rest of that budget has room for it: a draft
+    // with many large paths never reads more than one message may carry.
+    let (mut count, mut total) = draft
+        .staged
+        .iter()
+        .filter(|f| f.bytes().is_some())
+        .fold((0usize, 0u64), |(n, bytes), f| (n + 1, bytes + f.size));
     crate::jobs::run(
         s,
         "restage attachments",
         move |_| async move {
             let mut out = Vec::new();
             for (key, path) in paths {
-                out.push((
-                    key,
-                    attachments::stage(&path, &limits, Backend::Remote).await,
-                ));
+                let name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("attachment")
+                    .to_string();
+                let fits = match tokio::fs::metadata(&path).await {
+                    Ok(meta) => {
+                        count < limits.max_count
+                            && total.saturating_add(meta.len()) <= limits.max_total_bytes
+                    }
+                    // `stage` says why it cannot be read.
+                    Err(_) => true,
+                };
+                if !fits {
+                    out.push((
+                        key,
+                        Err(format!(
+                            "{name} does not fit in one message to this computer; remove it or send it separately."
+                        )),
+                    ));
+                    continue;
+                }
+                let staged = attachments::stage(&path, &limits, Backend::Remote).await;
+                if let Ok(read) = &staged {
+                    count += 1;
+                    total = total.saturating_add(read.size);
+                }
+                out.push((key, staged));
             }
             Ok(out)
         },

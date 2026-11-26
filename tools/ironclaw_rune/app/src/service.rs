@@ -42,9 +42,10 @@ struct Supervisor {
     stopping: AtomicBool,
     restarting: AtomicBool,
     running: AtomicBool,
-    /// `start` came while a stopped supervisor was still winding down: it
-    /// runs on (or a new one starts) instead of the start being lost.
-    again: AtomicBool,
+    /// What was last asked: `start` (true) or `stop` (false). A supervisor
+    /// whose loop ended reads it, in turn with them ([`control`]), to run
+    /// on instead of a start being lost while it wound down.
+    wanted: AtomicBool,
 }
 
 fn supervisor() -> &'static Arc<Supervisor> {
@@ -55,7 +56,7 @@ fn supervisor() -> &'static Arc<Supervisor> {
             stopping: AtomicBool::new(false),
             restarting: AtomicBool::new(false),
             running: AtomicBool::new(false),
-            again: AtomicBool::new(false),
+            wanted: AtomicBool::new(false),
         })
     })
 }
@@ -186,24 +187,28 @@ pub fn start() {
         return;
     };
     let sup = supervisor().clone();
-    if sup.running.swap(true, Ordering::SeqCst) {
+    // `start`, `stop` and a supervisor's last decision take turns
+    // ([`control`]): what is wanted and who supervises change together.
+    let _turn = control();
+    // Asked for again under the lock: a stop may have come since the check
+    // above, and it has the last word.
+    if !allowed() {
+        return;
+    }
+    sup.wanted.store(true, Ordering::SeqCst);
+    if sup.running.load(Ordering::SeqCst) {
         // One supervisor at a time. A stopped one still winding down (its
-        // backend draining) is told to run on: it restarts the backend when
-        // the old one has exited, and never overlaps a second supervisor.
+        // backend draining) runs on: it starts the backend again when the
+        // old one has exited, and never overlaps a second supervisor.
         if sup.stopping.swap(false, Ordering::SeqCst) {
             sup.restarting.store(true, Ordering::SeqCst);
             // It resumes as a new lifecycle: its errors show again.
             new_lifecycle();
             clear_startup_failure();
         }
-        sup.again.store(true, Ordering::SeqCst);
-        // It may have ended between those lines, past its own last look at
-        // `again`: then this start is the owner after all.
-        if !sup.running.load(Ordering::SeqCst) && sup.again.swap(false, Ordering::SeqCst) {
-            start();
-        }
         return;
     }
+    sup.running.store(true, Ordering::SeqCst);
     sup.stopping.store(false, Ordering::SeqCst);
     sup.restarting.store(false, Ordering::SeqCst);
     // A new supervising lifecycle: an earlier one's error is history.
@@ -216,17 +221,21 @@ pub fn start() {
             retire_launchd_jobs(&paths.home);
             stop_stale(&paths.home);
             loop {
-                supervise(&sup, &paths, lifecycle);
-                // Asked to run again after its stop had already ended the loop.
-                if !sup.again.swap(false, Ordering::SeqCst) || sup.stopping.load(Ordering::SeqCst) {
+                let ended = supervise(&sup, &paths, lifecycle);
+                // Its last decision, in turn with `start` and `stop`: run
+                // on when a start came after the stop that ended the loop,
+                // else give the supervisor's place up. A backend that could
+                // not be spawned is not retried here (the next connect's
+                // start is a new try).
+                let _turn = control();
+                let run_on =
+                    ended == Ended::Stopped && sup.wanted.load(Ordering::SeqCst) && allowed();
+                if !run_on {
+                    sup.running.store(false, Ordering::SeqCst);
                     break;
                 }
+                sup.stopping.store(false, Ordering::SeqCst);
                 sup.restarting.store(false, Ordering::SeqCst);
-            }
-            sup.running.store(false, Ordering::SeqCst);
-            // A start that arrived between that check and this line.
-            if sup.again.swap(false, Ordering::SeqCst) && !sup.stopping.load(Ordering::SeqCst) {
-                start();
             }
         });
     if let Err(e) = spawned {
@@ -234,6 +243,21 @@ pub fn start() {
         owner.running.store(false, Ordering::SeqCst);
         tracing::warn!(error = %e, "backend supervisor did not start");
     }
+}
+
+/// One at a time: `start`, `stop` and a supervisor deciding whether it ends.
+fn control() -> std::sync::MutexGuard<'static, ()> {
+    static CONTROL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    CONTROL.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// How [`supervise`] returned.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Ended {
+    /// Told to stop (or stopped between backends).
+    Stopped,
+    /// The backend could not be spawned.
+    SpawnFailed,
 }
 
 /// Restart the backend this app runs (a CLI installed since it started is
@@ -312,10 +336,11 @@ pub fn stop_on_terminate() {}
 /// managing a local backend process.
 pub fn stop() -> bool {
     let sup = supervisor();
+    let _turn = control();
     // `running` is the supervisor thread's to clear, when it has ended: a
     // start that comes first is handed to it (`start`), never a second one.
     let was_running = sup.running.load(Ordering::SeqCst);
-    sup.again.store(false, Ordering::SeqCst);
+    sup.wanted.store(false, Ordering::SeqCst);
     // Before the pid is read: a backend being spawned right now is not in
     // `pid` yet, and its supervisor stops it itself when it sees this.
     sup.stopping.store(true, Ordering::SeqCst);
@@ -478,7 +503,7 @@ fn classify_exit(sup: &Supervisor) -> ExitAction {
     ExitAction::Backoff
 }
 
-fn supervise(sup: &Supervisor, paths: &Paths, lifecycle: u64) {
+fn supervise(sup: &Supervisor, paths: &Paths, lifecycle: u64) -> Ended {
     let mut backoff = Duration::from_secs(1);
     while !sup.stopping.load(Ordering::SeqCst) {
         // The lifecycle in force now: a supervisor that was stopped and
@@ -496,7 +521,7 @@ fn supervise(sup: &Supervisor, paths: &Paths, lifecycle: u64) {
                         paths.backend.display()
                     )),
                 );
-                return;
+                return Ended::SpawnFailed;
             }
         };
         let pid = child.id();
@@ -514,7 +539,7 @@ fn supervise(sup: &Supervisor, paths: &Paths, lifecycle: u64) {
         match classify_exit(sup) {
             ExitAction::Stop => {
                 tracing::debug!(?status, "backend stopped");
-                return;
+                return Ended::Stopped;
             }
             ExitAction::RestartNow => {
                 backoff = Duration::from_secs(1);
@@ -532,6 +557,7 @@ fn supervise(sup: &Supervisor, paths: &Paths, lifecycle: u64) {
         std::thread::sleep(backoff);
         backoff = (backoff * 2).min(MAX_BACKOFF);
     }
+    Ended::Stopped
 }
 
 /// Start one backend: the child, the app's handle to the stderr log the
@@ -762,7 +788,7 @@ mod tests {
             stopping: AtomicBool::new(false),
             restarting: AtomicBool::new(true),
             running: AtomicBool::new(true),
-            again: AtomicBool::new(false),
+            wanted: AtomicBool::new(false),
         };
         assert_eq!(classify_exit(&sup), ExitAction::RestartNow);
         // Flag is consumed once: a subsequent unexpected exit backs off.
