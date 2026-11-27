@@ -140,6 +140,7 @@ impl IdleArm {
             tool_busy_bound: rt.tool_busy_bound,
             write_timeout: rt.write_timeout,
             exit_grace: rt.exit_grace,
+            idle_delay: rt.idle_delay,
         });
         Self {
             runtime,
@@ -160,6 +161,7 @@ impl IdleArm {
             return;
         }
         let compactor = Arc::clone(&self.runtime.compactor);
+        let idle_delay = self.runtime.idle_delay;
         let id = compactor.next_id.fetch_add(1, Ordering::SeqCst);
         let thread = self.thread_id.clone();
         let (cancel, mut cancelled) = watch::channel(false);
@@ -169,7 +171,7 @@ impl IdleArm {
             let thread = thread.clone();
             tokio::spawn(async move {
                 let idle = tokio::select! {
-                    _ = tokio::time::sleep(IDLE_DELAY) => true,
+                    _ = tokio::time::sleep(idle_delay) => true,
                     _ = cancelled.wait_for(|c| *c) => false,
                 };
                 if idle {
@@ -267,11 +269,6 @@ impl IdleArm {
             }
         };
         let pgid = child.id().and_then(|id| i32::try_from(id).ok());
-        let kill = |pgid: Option<i32>| {
-            if let Some(group) = pgid {
-                crate::rpc::kill_group(group, "idle compaction");
-            }
-        };
         let mut run = CompactRun {
             started: true,
             ..CompactRun::default()
@@ -279,10 +276,7 @@ impl IdleArm {
         let (Some(mut stdin), Some(stdout), Some(stderr)) =
             (child.stdin.take(), child.stdout.take(), child.stderr.take())
         else {
-            kill(pgid);
-            if let Err(error) = child.wait().await {
-                tracing::debug!(%error, "idle compaction: reaping the killed child failed");
-            }
+            end(&mut child, pgid).await;
             run.error = Some("stdio unavailable".into());
             return run;
         };
@@ -292,7 +286,7 @@ impl IdleArm {
                 tracing::debug!(target: "claude_cli", "compact stderr: {line}");
             }
         });
-        // Prompt, then EOF: the CLI compacts and exits.
+        // Prompt, then EOF: the CLI compacts and should exit.
         let prompt = control::prompt_message(&run_id, COMPACT_PROMPT);
         let written = async {
             stdin.write_all(format!("{prompt}\n").as_bytes()).await?;
@@ -302,39 +296,63 @@ impl IdleArm {
         .await;
         if let Err(error) = written {
             tracing::debug!(%error, "idle compaction: stdin write failed");
-            kill(pgid);
-            if let Err(error) = child.wait().await {
-                tracing::debug!(%error, "idle compaction: reaping the killed child failed");
-            }
+            end(&mut child, pgid).await;
             run.error = Some("stdin closed".into());
             return run;
         }
-        let deadline = tokio::time::sleep(COMPACT_TIMEOUT);
-        tokio::pin!(deadline);
-        let mut lines = BufReader::new(stdout).lines();
-        let cut = loop {
-            tokio::select! {
-                next = lines.next_line() => match next {
-                    Ok(Some(line)) => run.push_line(&line),
-                    _ => break None,
-                },
-                _ = cancelled.wait_for(|c| *c) => break Some("cancelled"),
-                _ = &mut deadline => break Some("timed out"),
+        // The CLI does not reliably exit once it has answered (a turn's
+        // process lingers the same way, see `exit_grace`): after the result
+        // it gets the turn's grace, then it and its detached work are ended,
+        // and the run counts as done. Absolute deadlines: output never
+        // extends a wait.
+        let timeout_at = tokio::time::Instant::now() + COMPACT_TIMEOUT;
+        let mut settle_at: Option<tokio::time::Instant> = None;
+        let mut lines = Some(BufReader::new(stdout).lines());
+        let exit = loop {
+            if run.done && settle_at.is_none() {
+                settle_at = Some(tokio::time::Instant::now() + rt.exit_grace);
             }
+            let until = settle_at.map_or(timeout_at, |at| at.min(timeout_at));
+            let step = match lines.as_mut() {
+                Some(reader) => tokio::select! {
+                    next = reader.next_line() => match next {
+                        Ok(Some(line)) => {
+                            run.push_line(&line);
+                            continue;
+                        }
+                        // Stdout closed: now wait for the exit, still bounded.
+                        _ => {
+                            lines = None;
+                            continue;
+                        }
+                    },
+                    _ = cancelled.wait_for(|c| *c) => CompactExit::Cancelled,
+                    () = tokio::time::sleep_until(until) => CompactExit::Deadline,
+                },
+                None => tokio::select! {
+                    _ = child.wait() => CompactExit::Exited,
+                    _ = cancelled.wait_for(|c| *c) => CompactExit::Cancelled,
+                    () = tokio::time::sleep_until(until) => CompactExit::Deadline,
+                },
+            };
+            break step;
         };
-        // Stdout closed: the child should exit now, but a CLI that lingers is
-        // still bound by the cancel and the deadline.
-        let cut = match cut {
-            Some(reason) => Some(reason),
-            None => tokio::select! {
-                _ = child.wait() => None,
-                _ = cancelled.wait_for(|c| *c) => Some("cancelled"),
-                _ = &mut deadline => Some("timed out"),
-            },
-        };
-        if let Some(reason) = cut {
-            kill(pgid);
-            run.error = Some(reason.into());
+        match exit {
+            CompactExit::Exited => {}
+            CompactExit::Deadline => {
+                end(&mut child, pgid).await;
+                // The result was in: the compaction finished, only the
+                // process lingered.
+                if !run.done {
+                    run.error = Some("timed out".into());
+                }
+            }
+            CompactExit::Cancelled => {
+                end(&mut child, pgid).await;
+                if !run.done {
+                    run.error = Some("cancelled".into());
+                }
+            }
         }
         // Reaped before returning: `preempt` waits on this.
         if let Err(error) = child.wait().await {
@@ -435,6 +453,32 @@ impl CompactRun {
                 }
             }
             _ => {}
+        }
+    }
+}
+
+/// How a compaction's wait on its CLI ended.
+enum CompactExit {
+    /// The process exited by itself.
+    Exited,
+    /// A turn start, Stop or delete preempted it.
+    Cancelled,
+    /// The post-result grace or the overall timeout ran out.
+    Deadline,
+}
+
+/// End the compaction's process tree: its group and any detached groups
+/// its commands started, as a lingering turn's are.
+async fn end(child: &mut tokio::process::Child, pgid: Option<i32>) {
+    match pgid {
+        Some(group) => crate::rpc::end_tree(child, group, super::KILL_GRACE).await,
+        None => {
+            if let Err(error) = child.start_kill() {
+                tracing::debug!(%error, "idle compaction: kill failed");
+            }
+            if let Err(error) = child.wait().await {
+                tracing::debug!(%error, "idle compaction: reaping the killed child failed");
+            }
         }
     }
 }

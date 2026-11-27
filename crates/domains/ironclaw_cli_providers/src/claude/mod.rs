@@ -89,7 +89,7 @@ const MODELS: [&str; 4] = [
 ];
 
 /// How long Stop waits after SIGTERM before SIGKILL.
-const KILL_GRACE: Duration = Duration::from_secs(2);
+pub(super) const KILL_GRACE: Duration = Duration::from_secs(2);
 /// How long the CLI may take to acknowledge the hook registration.
 const INIT_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long the CLI may run on once the turn's result is in and its input
@@ -173,6 +173,8 @@ pub struct ClaudeCliRuntime {
     tool_busy_bound: Duration,
     /// How long the CLI may outlive its closed input after the result.
     exit_grace: Duration,
+    /// How long a thread sits idle before its `/compact` (see `compact.rs`).
+    idle_delay: Duration,
     /// How long one frame may take to go onto the CLI's stdin.
     write_timeout: Duration,
 }
@@ -228,6 +230,7 @@ impl ClaudeCliRuntime {
             tool_busy_bound: TOOL_BUSY_BOUND,
             write_timeout: input::DEFAULT_WRITE_TIMEOUT,
             exit_grace: EXIT_GRACE,
+            idle_delay: compact::IDLE_DELAY,
         })
     }
 
@@ -263,6 +266,13 @@ impl ClaudeCliRuntime {
     /// is closed (default [`EXIT_GRACE`]); tests shorten it.
     pub fn with_exit_grace(mut self, grace: Duration) -> Self {
         self.exit_grace = grace;
+        self
+    }
+
+    /// How long a thread sits idle before its `/compact` (default
+    /// [`compact::IDLE_DELAY`], inside the 5-minute cache); tests shorten it.
+    pub fn with_idle_delay(mut self, delay: Duration) -> Self {
+        self.idle_delay = delay;
         self
     }
 
