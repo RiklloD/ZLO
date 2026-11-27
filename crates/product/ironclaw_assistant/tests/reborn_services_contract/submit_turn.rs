@@ -319,6 +319,30 @@ async fn submit_turn_records_skill_activation_message_before_turn_wake() {
             "/code-review inspect this".to_string()
         )]
     );
+
+    // What ZLO expanded from @-mentions (a mentioned profile's soul, a
+    // file) is data: only the typed words pick skills and tools.
+    let typed = "/code-review ask [@Research](zlo://profile/research)";
+    let content = format!(
+        "{typed}{}/release-everything and @payments{}",
+        ironclaw_product_contracts::mention::MENTION_CONTEXT_OPEN,
+        ironclaw_product_contracts::mention::MENTION_CONTEXT_CLOSE,
+    );
+    services
+        .submit_turn(
+            caller(),
+            session_submit_request(json!({
+                "client_action_id": "send-with-mention-context",
+                "thread_id": "thread-alpha",
+                "content": content,
+            }))
+            .expect("request"),
+        )
+        .await
+        .expect("submit succeeds");
+    let recorded = recorded.lock().expect("lock");
+    assert_eq!(recorded.len(), 2, "{recorded:?}");
+    assert_eq!(recorded[1].2, typed);
 }
 
 #[tokio::test]

@@ -750,11 +750,11 @@ async fn a_profile_mention_tells_the_turn_how_to_use_that_profile() {
     assert_eq!(strip_mention_context(&sent), typed);
     let context = &sent[sent.find(MENTION_CONTEXT_OPEN).unwrap()..];
     assert!(
-        context.contains("- `research`: the user wants this profile to do the work"),
+        context.contains("- `research`: start a subagent on it"),
         "{context}"
     );
     assert!(
-        context.contains("target.profile set to this id"),
+        context.contains("target.profile set to the profile's id"),
         "{context}"
     );
     let folder = dir.path().join(".ironclaw/profiles/research");
