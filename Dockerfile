@@ -68,6 +68,8 @@ FROM chef AS planner
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY tools/ironclaw_stress/ tools/ironclaw_stress/
+# `zlo update` embeds the desktop app's install scripts (include_str!).
+COPY tools/ironclaw_rune/install_app.sh tools/ironclaw_rune/running.sh tools/ironclaw_rune/
 COPY skills/ skills/
 COPY tests/ tests/
 RUN mkdir -p src \
@@ -95,6 +97,8 @@ FROM deps AS builder
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY tools/ironclaw_stress/ tools/ironclaw_stress/
+# `zlo update` embeds the desktop app's install scripts (include_str!).
+COPY tools/ironclaw_rune/install_app.sh tools/ironclaw_rune/running.sh tools/ironclaw_rune/
 COPY skills/ skills/
 COPY tests/ tests/
 RUN mkdir -p src \
