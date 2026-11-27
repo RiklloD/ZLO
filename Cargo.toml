@@ -195,8 +195,8 @@ wasmtime-wasi = { version = "50.0.2", default-features = false, features = ["p2"
 # bare "1.x" floats to the newest wasm-tools release and re-adds the duplicates.
 # Move all three together with wasmtime.
 wat = "~1.263.0"
-wit-component = "0.261.0"
-wit-parser = "0.261.0"
+wit-component = "0.263.0"
+wit-parser = "0.263.0"
 zeroize = "1"
 zip = { version = "9", default-features = false }
 
