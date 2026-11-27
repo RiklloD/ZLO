@@ -341,12 +341,19 @@ impl SessionLog {
         let has_status = match self.has_status {
             Some(known) => known,
             None => {
-                let probe =
-                    "SELECT count(*) FROM pragma_table_info('steps') WHERE name = 'status';";
+                // A table not created yet reads like one without the
+                // column: only a table that exists settles the answer.
+                let probe = "SELECT (SELECT count(*) FROM sqlite_master \
+                             WHERE type = 'table' AND name = 'steps') || '|' || \
+                             (SELECT count(*) FROM pragma_table_info('steps') \
+                             WHERE name = 'status');";
                 match sqlite::query(&path, probe).await {
                     Ok(out) => {
-                        let known = out.trim() == "1";
-                        self.has_status = Some(known);
+                        let (table, column) = out.trim().split_once('|').unwrap_or(("0", "0"));
+                        let known = column == "1";
+                        if table == "1" {
+                            self.has_status = Some(known);
+                        }
                         known
                     }
                     Err(error) => {
@@ -551,6 +558,39 @@ mod tests {
         let open = parse_span("L|15|4F4B|2\nR|1\nM|2\n").unwrap().last;
         assert!(!finished_reply(open.as_ref()));
         assert_eq!(parse_span("R|0\n"), None);
+    }
+
+    /// Review P3: a log whose `steps` table is not created yet is probed
+    /// again, not cached as a log without `status`.
+    #[tokio::test]
+    async fn a_missing_steps_table_is_probed_again() {
+        let Some(sqlite) = sqlite::tool() else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let conversations = dir.path().join(APP_DATA_DIR).join("conversations");
+        std::fs::create_dir_all(&conversations).unwrap();
+        let db = conversations.join("s-1.db");
+        let sql = |statement: &str| {
+            let ok = std::process::Command::new(&sqlite)
+                .arg(&db)
+                .arg(statement)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "{statement}");
+        };
+        let mut log = SessionLog::open(dir.path(), "s-1").await.unwrap();
+        sql("CREATE TABLE other (x integer);");
+        assert_eq!(log.peek().await, None, "no steps table yet");
+        sql(
+            "CREATE TABLE steps (idx integer PRIMARY KEY, step_type integer NOT NULL DEFAULT 0, \
+             status integer NOT NULL DEFAULT 0, step_payload blob);\
+             INSERT INTO steps VALUES (0, 15, 3, CAST('done' AS BLOB));",
+        );
+        let step = log.peek().await.unwrap();
+        assert_eq!(step.status, Some(3));
+        assert!(finished_reply(Some(&step)));
     }
 
     /// Each settled prompt reads only its own steps, from the session's

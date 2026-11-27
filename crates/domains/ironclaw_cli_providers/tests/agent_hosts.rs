@@ -572,7 +572,7 @@ while IFS= read -r line; do
         P1=$id; step 15 working; step 17 'Error 502, Message: Bad Gateway: Failed to connect to backend API, Status: 502 Bad Gateway, Details: []'
         chunk "Sorry"; : > "$GEMINI_HOME/stepped"
       elif [ "$MODE" = silentdone ] || [ "$MODE" = silentopen ]; then
-        sqlite3 "$DB" "ALTER TABLE steps ADD COLUMN status integer NOT NULL DEFAULT 0;"
+        sqlite3 "$DB" "ALTER TABLE steps ADD COLUMN status integer NOT NULL DEFAULT 0;" 2>/dev/null
         if [ "$MODE" = silentdone ]; then S=3; else S=2; fi
         sqlite3 "$DB" "INSERT INTO steps (step_type, status, step_payload) VALUES (15, $S, CAST('All done' AS BLOB));"
         chunk "All done"
@@ -3055,6 +3055,29 @@ async fn antigravity_cli_a_silent_prompt_with_a_finished_reply_completes() {
     assert!(
         agy_log(dir.path()).contains(r#""method":"session/cancel""#),
         "the hung prompt is cancelled"
+    );
+
+    // Review P2: a steered turn is never ended this way; the finished
+    // step may be the superseded prompt's.
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let rt = antigravity_cli_with(dir.path(), "silentdone", &recorder, None, |c| {
+        c.prompt_silence = Duration::from_millis(500);
+    });
+    let steered = thread(&rt, "default").await;
+    rt.start_turn(&steered, input()).await.unwrap();
+    wait_for(|| agy_log(dir.path()).contains(r#""method":"session/prompt""#)).await;
+    assert_eq!(
+        rt.steer(&steered, "and one more thing", SteerHow::Steer)
+            .await
+            .unwrap(),
+        SteerOutcome::Steered
+    );
+    // Past two silence checks (one per `SILENCE_CHECK`, 5 s).
+    tokio::time::sleep(Duration::from_secs(12)).await;
+    assert!(
+        recorder.finished.lock().unwrap().is_empty(),
+        "a steered turn keeps waiting for its own answer"
     );
 
     let dir = tempfile::tempdir().unwrap();
