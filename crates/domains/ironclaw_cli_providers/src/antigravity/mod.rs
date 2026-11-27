@@ -809,6 +809,8 @@ impl Turn {
         let mut silent_failure: Option<outcome::HiddenFailure> = None;
         let mut next_silence_check = Instant::now();
         let mut resumed = false;
+        // A steer's prompt went out this turn.
+        let mut steered = false;
         // A wake agy queued but has not replied to yet (checked at most
         // once per [`HOLD_SETTLE`]).
         let (mut wake_pending, mut next_wake_check) = (false, Instant::now());
@@ -835,6 +837,54 @@ impl Turn {
                         tracing::debug!(error = %error.label(), "antigravity: cancel not sent");
                     }
                     silent_failure = Some(failure);
+                    break;
+                }
+                // The reply finished but `session/prompt` never answered
+                // (t3code 2a7b91ba93): the turn is done, not hung. Never on
+                // a steered turn (a superseded prompt's reply can land after
+                // the steer's log mark), and only when nothing arrived while
+                // the log was read.
+                if outcome::finished_reply(step.as_ref()) && !steered && superseded.is_empty() {
+                    let mut arrived = false;
+                    while let Ok(message) = inbound.try_recv() {
+                        closed_by_usage =
+                            self.handle(&client, &session_id, agent, message, &mut fold, &mut live);
+                        arrived = true;
+                    }
+                    if arrived {
+                        quiet_since = Instant::now();
+                        continue;
+                    }
+                    // The real answer came in meanwhile: the settled path
+                    // judges it.
+                    let ready = prompt.as_mut().and_then(|pending| {
+                        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+                        match pending.as_mut().poll(&mut cx) {
+                            std::task::Poll::Ready(result) => Some(result),
+                            std::task::Poll::Pending => None,
+                        }
+                    });
+                    if let Some(result) = ready {
+                        prompt = None;
+                        answer = result;
+                        settled = settled_failure(Some(&mut *log), &answer).await;
+                        continue;
+                    }
+                    let working = self.permissions.load(Ordering::SeqCst) != 0
+                        || live.busy()
+                        || live.background_running()
+                        || wake::pending_reply(&self.config.profile_dir, &session_id).await;
+                    if working {
+                        continue;
+                    }
+                    tracing::debug!("antigravity: a silent prompt's reply had finished");
+                    if let Ok(_guard) = self.session.lock()
+                        && let Err(error) =
+                            client.notify("session/cancel", Some(json!({"sessionId": session_id})))
+                    {
+                        tracing::debug!(error = %error.label(), "antigravity: cancel not sent");
+                    }
+                    answer = Ok(json!({"stopReason": "end_turn"}));
                     break;
                 }
             }
@@ -1008,6 +1058,7 @@ impl Turn {
                     match queued {
                         Some((pending, written)) => {
                             live.steered();
+                            steered = true;
                             let at = request.answer(Taken::Queued(written), ledger);
                             // This steer's own prompt: its answer is the
                             // evidence the ledger settles it on.

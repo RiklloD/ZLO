@@ -26,6 +26,8 @@ use super::sqlite;
 const ERROR_STEP: i64 = 17;
 /// `CORTEX_STEP_TYPE_PLANNER_RESPONSE`: the model answered within the turn.
 const PLANNER_RESPONSE_STEP: i64 = 15;
+/// `CORTEX_STEP_STATUS_DONE`.
+const DONE_STEP_STATUS: i64 = 3;
 /// The harness error text leads the payload; a Go stack trace follows it.
 const MAX_ERROR_PAYLOAD_BYTES: usize = 16_384;
 /// The prompt a transient mid-turn failure is resumed with, once.
@@ -39,6 +41,14 @@ pub(super) struct LastStep {
     /// bytes around the harness text).
     pub(super) text: String,
     pub(super) reached_model: bool,
+    /// The step's `status` (`None` on a log without the column).
+    pub(super) status: Option<i64>,
+}
+
+/// The prompt's last step is the model's reply, finished: a prompt that
+/// then goes silent is done, not hung (t3code 2a7b91ba93).
+pub(super) fn finished_reply(step: Option<&LastStep>) -> bool {
+    step.is_some_and(|s| s.step_type == PLANNER_RESPONSE_STEP && s.status == Some(DONE_STEP_STATUS))
 }
 
 /// A failure a clean stop hid.
@@ -237,6 +247,8 @@ pub(super) struct SessionLog {
     identity: Option<(u64, u64)>,
     /// The last step index already attributed to a prompt.
     cursor: i64,
+    /// Whether `steps` has a `status` column; probed on the first read.
+    has_status: Option<bool>,
 }
 
 /// What a prompt added to the log since the cursor.
@@ -272,6 +284,7 @@ impl SessionLog {
             file: format!("{session_id}.db"),
             identity: None,
             cursor: -1,
+            has_status: None,
         };
         match log.checked_path().await? {
             Managed::Missing(_) => {}
@@ -325,9 +338,35 @@ impl SessionLog {
             // The file this turn's session created.
             None => self.identity = Some(now),
         }
+        let has_status = match self.has_status {
+            Some(known) => known,
+            None => {
+                // A table not created yet reads like one without the
+                // column: only a table that exists settles the answer.
+                let probe = "SELECT (SELECT count(*) FROM sqlite_master \
+                             WHERE type = 'table' AND name = 'steps') || '|' || \
+                             (SELECT count(*) FROM pragma_table_info('steps') \
+                             WHERE name = 'status');";
+                match sqlite::query(&path, probe).await {
+                    Ok(out) => {
+                        let (table, column) = out.trim().split_once('|').unwrap_or(("0", "0"));
+                        let known = column == "1";
+                        if table == "1" {
+                            self.has_status = Some(known);
+                        }
+                        known
+                    }
+                    Err(error) => {
+                        tracing::debug!(%error, "antigravity: session log schema not read");
+                        return None;
+                    }
+                }
+            }
+        };
+        let status = if has_status { "status" } else { "NULL" };
         let start = self.cursor;
         let sql = format!(
-            "SELECT 'L', step_type, hex(substr(step_payload, 1, {MAX_ERROR_PAYLOAD_BYTES})) \
+            "SELECT 'L', step_type, hex(substr(step_payload, 1, {MAX_ERROR_PAYLOAD_BYTES})), {status} \
              FROM steps WHERE idx > {start} ORDER BY idx DESC LIMIT 1; \
              SELECT 'R', EXISTS(SELECT 1 FROM steps WHERE idx > {start} \
              AND step_type = {PLANNER_RESPONSE_STEP}); \
@@ -354,9 +393,11 @@ fn parse_span(output: &str) -> Option<Span> {
             Some("L") => {
                 let step_type = cells.next()?.trim().parse().ok()?;
                 let hex = cells.next()?.trim();
+                let status = cells.next().and_then(|c| c.trim().parse().ok());
                 last = Some((
                     step_type,
                     String::from_utf8_lossy(&unhex(hex)?).into_owned(),
+                    status,
                 ));
             }
             Some("R") => reached_model = cells.next().is_some_and(|c| c.trim() == "1"),
@@ -365,10 +406,11 @@ fn parse_span(output: &str) -> Option<Span> {
         }
     }
     Some(Span {
-        last: last.map(|(step_type, text)| LastStep {
+        last: last.map(|(step_type, text, status)| LastStep {
             step_type,
             text,
             reached_model,
+            status,
         }),
         max_idx: max_idx?,
     })
@@ -393,6 +435,7 @@ mod tests {
             step_type,
             text: text.into(),
             reached_model,
+            status: None,
         }
     }
 
@@ -495,7 +538,7 @@ mod tests {
     #[test]
     fn span_rows_parse() {
         assert_eq!(
-            parse_span("L|17|4F4B\nR|1\nM|4\n"),
+            parse_span("L|17|4F4B|\nR|1\nM|4\n"),
             Some(Span {
                 last: Some(step(17, "OK", true)),
                 max_idx: 4
@@ -510,7 +553,44 @@ mod tests {
             })
         );
         assert_eq!(parse_span("L|17|4F4\nR|0\nM|1\n"), None);
+        let done = parse_span("L|15|4F4B|3\nR|1\nM|2\n").unwrap().last;
+        assert!(finished_reply(done.as_ref()));
+        let open = parse_span("L|15|4F4B|2\nR|1\nM|2\n").unwrap().last;
+        assert!(!finished_reply(open.as_ref()));
         assert_eq!(parse_span("R|0\n"), None);
+    }
+
+    /// Review P3: a log whose `steps` table is not created yet is probed
+    /// again, not cached as a log without `status`.
+    #[tokio::test]
+    async fn a_missing_steps_table_is_probed_again() {
+        let Some(sqlite) = sqlite::tool() else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let conversations = dir.path().join(APP_DATA_DIR).join("conversations");
+        std::fs::create_dir_all(&conversations).unwrap();
+        let db = conversations.join("s-1.db");
+        let sql = |statement: &str| {
+            let ok = std::process::Command::new(&sqlite)
+                .arg(&db)
+                .arg(statement)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "{statement}");
+        };
+        let mut log = SessionLog::open(dir.path(), "s-1").await.unwrap();
+        sql("CREATE TABLE other (x integer);");
+        assert_eq!(log.peek().await, None, "no steps table yet");
+        sql(
+            "CREATE TABLE steps (idx integer PRIMARY KEY, step_type integer NOT NULL DEFAULT 0, \
+             status integer NOT NULL DEFAULT 0, step_payload blob);\
+             INSERT INTO steps VALUES (0, 15, 3, CAST('done' AS BLOB));",
+        );
+        let step = log.peek().await.unwrap();
+        assert_eq!(step.status, Some(3));
+        assert!(finished_reply(Some(&step)));
     }
 
     /// Each settled prompt reads only its own steps, from the session's

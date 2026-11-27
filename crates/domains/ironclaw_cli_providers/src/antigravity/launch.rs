@@ -25,6 +25,8 @@ const FIRST_ACP_CLI: (u64, u64, u64) = (1, 5, 0);
 /// and conversations in. The legacy runtime uses the same name, which is
 /// what keeps one profile valid for both.
 pub(super) const APP_DATA_DIR: &str = "antigravity-acp";
+/// `AGY_CLI_DISABLE_AUTO_UPDATE`'s value agy honours (its docs say "true").
+const AUTO_UPDATE_OFF: &str = "true";
 
 /// The only inherited variables the agent sees. Everything else (ambient
 /// cloud credentials, API keys, agent knobs) is dropped: the agent signs in
@@ -92,7 +94,8 @@ pub(super) fn agent_command(c: &AntigravityConfig) -> Command {
         .env("ELECTRON_RUN_AS_NODE", "1")
         // An `agy` that replaces itself in place mid-turn breaks the
         // running agent (t3code #39363); the user updates it themselves.
-        .env("AGY_CLI_DISABLE_AUTO_UPDATE", "1")
+        // agy reads "true"; with "1" it kept self-updating (t3code 4da8d19d08).
+        .env("AGY_CLI_DISABLE_AUTO_UPDATE", AUTO_UPDATE_OFF)
         .env("TMPDIR", tmp)
         // A background turn never opens a browser on its own.
         .env("BROWSER", "/usr/bin/true");
@@ -409,7 +412,7 @@ async fn cli_version(agy: &Path) -> VersionProbe {
                 .filter_map(|k| Some((k, std::env::var_os(k)?))),
         )
         // Killed after its deadline: never mid-way through replacing itself.
-        .env("AGY_CLI_DISABLE_AUTO_UPDATE", "1")
+        .env("AGY_CLI_DISABLE_AUTO_UPDATE", AUTO_UPDATE_OFF)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -642,7 +645,7 @@ mod tests {
         let env: Vec<_> = command.as_std().get_envs().collect();
         assert!(
             env.iter()
-                .any(|(k, v)| *k == "AGY_CLI_DISABLE_AUTO_UPDATE" && v.is_some_and(|v| v == "1")),
+                .any(|(k, v)| *k == "AGY_CLI_DISABLE_AUTO_UPDATE" && v.is_some_and(|v| v == "true")),
             "{env:?}"
         );
     }

@@ -2,9 +2,16 @@
 //!
 //! The route lists and calls `ironclaw_orchestrator::tools::TOOLS`; a host
 //! can add more (history search, computer use) through
-//! [`BridgeToolProvider`]s, each added once at startup. Calls run as the session's thread, exactly like the orchestrator
-//! tools: the provider receives the thread record and answers an MCP tool
-//! result. Additive: without a provider the route is unchanged.
+//! [`BridgeToolProvider`]s. Calls run as the session's thread, exactly like
+//! the orchestrator tools: the provider receives the thread record and
+//! answers an MCP tool result. Additive: without a provider the route is
+//! unchanged.
+//!
+//! A runtime may build its product surface more than once (the channel host
+//! takes its own copy), and every build registers its providers again. A
+//! provider that offers a name an earlier one offered replaces it, and
+//! `tools/list` never repeats a name: Antigravity refuses to start a session
+//! whose MCP servers list one tool name twice.
 
 use std::sync::Arc;
 
@@ -64,8 +71,19 @@ pub(crate) async fn handle_with_tools(
     if method == "tools/list"
         && let Some(tools) = answer["result"]["tools"].as_array_mut()
     {
+        let mut seen: std::collections::HashSet<String> = tools
+            .iter()
+            .filter_map(|tool| tool["name"].as_str().map(str::to_string))
+            .collect();
         for provider in &providers {
-            tools.extend(provider.tools());
+            for tool in provider.tools() {
+                let fresh = tool["name"]
+                    .as_str()
+                    .is_some_and(|name| seen.insert(name.to_string()));
+                if fresh {
+                    tools.push(tool);
+                }
+            }
         }
     }
     Some(answer)
@@ -73,12 +91,17 @@ pub(crate) async fn handle_with_tools(
 
 impl CliBridge {
     /// Add host tools to the MCP route. A call goes to the first provider
-    /// that handles its name.
+    /// that handles its name. A provider offering a name an earlier one
+    /// offered replaces that one, so registering again (a second product
+    /// surface over the same runtime) never lists a tool twice.
     pub fn add_tool_provider(&self, provider: Arc<dyn BridgeToolProvider>) {
-        self.tool_providers
+        let names = tool_names(provider.as_ref());
+        let mut providers = self
+            .tool_providers
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(provider);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        providers.retain(|existing| tool_names(existing.as_ref()).is_disjoint(&names));
+        providers.push(provider);
     }
 
     pub(crate) fn tool_providers(&self) -> Vec<Arc<dyn BridgeToolProvider>> {
@@ -87,6 +110,14 @@ impl CliBridge {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
+}
+
+fn tool_names(provider: &dyn BridgeToolProvider) -> std::collections::HashSet<String> {
+    provider
+        .tools()
+        .iter()
+        .filter_map(|tool| tool["name"].as_str().map(str::to_string))
+        .collect()
 }
 
 /// The server name ZLO's route has inside Codex.
@@ -242,10 +273,20 @@ mod tests {
         };
         assert!(!names(&before).contains(&"history_search".to_string()));
 
+        // A second product surface over the same runtime registers its
+        // providers again; the newest replaces the first and the name is
+        // listed once (Antigravity refuses duplicate tool names).
+        bridge.add_tool_provider(Arc::new(Recorder::default()));
         let recorder = Arc::new(Recorder::default());
         bridge.add_tool_provider(recorder.clone());
         let after = call(list).await;
-        assert!(names(&after).contains(&"history_search".to_string()));
+        assert_eq!(
+            names(&after)
+                .iter()
+                .filter(|name| *name == "history_search")
+                .count(),
+            1
+        );
         assert_eq!(names(&after).len(), names(&before).len() + 1);
 
         let result = call(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
