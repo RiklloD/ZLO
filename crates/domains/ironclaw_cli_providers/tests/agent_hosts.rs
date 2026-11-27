@@ -571,6 +571,11 @@ while IFS= read -r line; do
       elif [ "$MODE" = e502steer ]; then
         P1=$id; step 15 working; step 17 'Error 502, Message: Bad Gateway: Failed to connect to backend API, Status: 502 Bad Gateway, Details: []'
         chunk "Sorry"; : > "$GEMINI_HOME/stepped"
+      elif [ "$MODE" = silentdone ] || [ "$MODE" = silentopen ]; then
+        sqlite3 "$DB" "ALTER TABLE steps ADD COLUMN status integer NOT NULL DEFAULT 0;"
+        if [ "$MODE" = silentdone ]; then S=3; else S=2; fi
+        sqlite3 "$DB" "INSERT INTO steps (step_type, status, step_payload) VALUES (15, $S, CAST('All done' AS BLOB));"
+        chunk "All done"
       elif [ "$MODE" = silent502 ]; then
         step 15 working; step 17 'Error 502, Message: Bad Gateway: Failed to connect to backend API, Status: 502 Bad Gateway, Details: []'
         chunk "Sorry"
@@ -3025,6 +3030,44 @@ async fn antigravity_cli_a_failure_followed_by_a_steer_still_fails_the_turn() {
             .as_deref()
             .is_some_and(|e| e.contains("Bad Gateway: Failed to connect to backend API")),
         "{outcome:?}"
+    );
+}
+
+/// t3code 2a7b91ba93: a prompt whose reply the log shows finished
+/// (`PLANNER_RESPONSE`, status `DONE`) but that never answers completes the
+/// turn once the silence bound passes, instead of hanging for hours. A
+/// reply still in progress keeps waiting.
+#[tokio::test]
+async fn antigravity_cli_a_silent_prompt_with_a_finished_reply_completes() {
+    if !has_sqlite3() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let rt = antigravity_cli_with(dir.path(), "silentdone", &recorder, None, |c| {
+        c.prompt_silence = Duration::from_millis(500);
+    });
+    let started = std::time::Instant::now();
+    let (_, outcome) = one_turn(&rt, &recorder).await;
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert_eq!(outcome.status, TurnEndStatus::Completed, "{outcome:?}");
+    assert_eq!(outcome.final_text.as_deref(), Some("All done"));
+    assert!(
+        agy_log(dir.path()).contains(r#""method":"session/cancel""#),
+        "the hung prompt is cancelled"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(Recorder::default());
+    let rt = antigravity_cli_with(dir.path(), "silentopen", &recorder, None, |c| {
+        c.prompt_silence = Duration::from_millis(500);
+    });
+    let thread = thread(&rt, "default").await;
+    rt.start_turn(&thread, input()).await.unwrap();
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(
+        recorder.finished.lock().unwrap().is_empty(),
+        "a reply still being written is waited for"
     );
 }
 

@@ -837,6 +837,23 @@ impl Turn {
                     silent_failure = Some(failure);
                     break;
                 }
+                // The reply finished but `session/prompt` never answered
+                // (t3code 2a7b91ba93): the turn is done, not hung. Not while
+                // a tool or a backgrounded command is still running.
+                if outcome::finished_reply(step.as_ref())
+                    && !live.busy()
+                    && !live.background_running()
+                {
+                    tracing::debug!("antigravity: a silent prompt's reply had finished");
+                    if let Ok(_guard) = self.session.lock()
+                        && let Err(error) =
+                            client.notify("session/cancel", Some(json!({"sessionId": session_id})))
+                    {
+                        tracing::debug!(error = %error.label(), "antigravity: cancel not sent");
+                    }
+                    answer = Ok(json!({"stopReason": "end_turn"}));
+                    break;
+                }
             }
             if prompt.is_none() {
                 let ended = self.cancelled.load(Ordering::SeqCst)
