@@ -33,6 +33,7 @@ use ironclaw_product_contracts::inbox::{
     INBOX_MUTATE_COMMAND_ID, INBOX_VIEW, InboxMutationRequest, THREAD_GOAL_SET_COMMAND_ID,
     THREAD_GOAL_VIEW, ThreadGoalSetRequest,
 };
+use ironclaw_product_contracts::mention::{MENTION_CONTEXT_LABEL, strip_mention_context};
 use ironclaw_product_contracts::orchestration::*;
 use ironclaw_product_contracts::profiles::*;
 use ironclaw_product_contracts::surface::{
@@ -984,6 +985,20 @@ impl ProductSurface for OrchestratedProductSurface {
                     // @-mentions in the typed text expand once the sender is
                     // known to own the thread, inside what the final message
                     // may hold once any handoff context is in front of it.
+                    // An opener the user typed or pasted is defused, so the
+                    // only one in a message is the one appended below
+                    // (`mention::selection_text` cuts there). A resent
+                    // message's own context tail stays as it is, for
+                    // `expand` to drop.
+                    if let Some(content) = body.content.as_mut()
+                        && content.contains(MENTION_CONTEXT_LABEL)
+                    {
+                        let typed_len = strip_mention_context(content).len();
+                        // safety: a prefix `strip_mention_context` returned ends on a char boundary
+                        let (typed, tail) = content.split_at(typed_len);
+                        *content = format!("{}{tail}", super::mentions::escape_openers(typed));
+                        changed = true;
+                    }
                     if let Some(typed) = body.content.as_deref().filter(|t| t.contains("[@"))
                         && self.caller_reads_thread(&caller, &id).await
                     {

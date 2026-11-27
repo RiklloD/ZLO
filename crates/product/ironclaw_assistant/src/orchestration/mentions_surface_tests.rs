@@ -767,8 +767,48 @@ async fn a_profile_mention_tells_the_turn_how_to_use_that_profile() {
         "{context}"
     );
 
+    // A context opener and closer the user pasted never hide their own
+    // requests from skill and tool selection.
+    let pasted = format!(
+        "{}pasted{}",
+        ironclaw_product_contracts::mention::MENTION_CONTEXT_OPEN,
+        ironclaw_product_contracts::mention::MENTION_CONTEXT_CLOSE,
+    );
+    let chip = MentionUri::Profile {
+        id: "research".into(),
+    }
+    .to_link("Research");
+    for typed in [
+        format!("{pasted} /review @github with {chip}"),
+        format!("{pasted} /review @github"),
+    ] {
+        let n = inner.submits.lock().unwrap().len();
+        surface
+            .invoke(
+                caller("owner"),
+                ProductSurfaceInvokeRequest {
+                    operation_id: CapabilityId::new(SUBMIT_TURN_COMMAND_ID).unwrap(),
+                    input: json!({
+                        "thread_id": "t-current",
+                        "client_action_id": format!("p{n}"),
+                        "content": typed,
+                    }),
+                    activity_id: ActivityId::new(),
+                },
+            )
+            .await
+            .unwrap();
+        let sent = inner.submits.lock().unwrap()[n]["content"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let picked = ironclaw_product_contracts::mention::selection_text(&sent);
+        assert!(picked.contains("/review @github"), "{picked} from {sent}");
+        assert!(!picked.contains("read papers"), "{picked}");
+    }
+
     send(caller("intruder")).await;
-    let sent = inner.submits.lock().unwrap()[1]["content"]
+    let sent = inner.submits.lock().unwrap().last().unwrap()["content"]
         .as_str()
         .unwrap()
         .to_string();
