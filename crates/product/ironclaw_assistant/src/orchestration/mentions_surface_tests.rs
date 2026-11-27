@@ -750,7 +750,11 @@ async fn a_profile_mention_tells_the_turn_how_to_use_that_profile() {
     assert_eq!(strip_mention_context(&sent), typed);
     let context = &sent[sent.find(MENTION_CONTEXT_OPEN).unwrap()..];
     assert!(
-        context.contains("t3_delegate with context=\"brief\" and target.profile=\"research\""),
+        context.contains("- `research`: the user wants this profile to do the work"),
+        "{context}"
+    );
+    assert!(
+        context.contains("target.profile set to this id"),
         "{context}"
     );
     let folder = dir.path().join(".ironclaw/profiles/research");
@@ -769,8 +773,5 @@ async fn a_profile_mention_tells_the_turn_how_to_use_that_profile() {
         .unwrap()
         .to_string();
     assert!(!sent.contains("read papers"), "{sent}");
-    assert!(
-        sent.contains("profile `research` is not available"),
-        "{sent}"
-    );
+    assert!(sent.contains("`research`: not available"), "{sent}");
 }
