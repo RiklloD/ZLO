@@ -163,6 +163,7 @@ pub const SCENES: &[Scene] = &[
     }),
     ("draft-files", ws::fixture_draft_files),
     ("draft-mention", ws::fixture_draft_mention),
+    ("draft-mention-profile", ws::fixture_draft_mention_profile),
     ("draft-runs-on", ws::fixture_draft_runs_on),
     ("draft-worktree-menu", ws::fixture_draft_worktree_menu),
     ("draft-runs-on-menu", ws::fixture_draft_runs_on_menu),

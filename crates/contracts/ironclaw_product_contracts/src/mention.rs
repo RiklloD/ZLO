@@ -2,10 +2,10 @@
 //!
 //! A mention is a Markdown link whose label starts with `@` and whose target
 //! is a [`MentionUri`]: `[@main.rs](file:///repo/src/main.rs#L10-20)`,
-//! `[@Fix login](zlo://thread/<id>)`. Being plain text, it survives storage,
+//! `[@Fix login](zlo://thread/<id>)`, `[@Research](zlo://profile/research)`. Being plain text, it survives storage,
 //! edit and resend unchanged, and any client re-parses it into a chip. The
 //! backend expands each mention at send time (file contents, folder tree,
-//! thread summary, git diff) and appends the result after
+//! thread summary, git diff, how to hand work to a profile) and appends the result after
 //! [`MENTION_CONTEXT_OPEN`], so the stored message keeps the typed text first
 //! and a client shows only that part ([`strip_mention_context`]).
 //!
@@ -84,6 +84,11 @@ pub enum MentionUri {
     Extension {
         name: String,
     },
+    /// Another ZLO profile (its slug id): the user wants the agent to use it,
+    /// which means starting the work there as a subagent.
+    Profile {
+        id: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -127,6 +132,7 @@ impl MentionUri {
             Self::Extension { name } => {
                 format!("{ZLO_SCHEME}extension/{}", encode_segment(name))
             }
+            Self::Profile { id } => format!("{ZLO_SCHEME}profile/{}", encode_segment(id)),
         }
     }
 
@@ -185,6 +191,11 @@ impl MentionUri {
                 name: decode_segment(name)?,
             });
         }
+        if let Some(id) = rest.strip_prefix("profile/") {
+            return no_fragment(Self::Profile {
+                id: decode_segment(id)?,
+            });
+        }
         Err(MentionUriError::UnknownScheme)
     }
 
@@ -195,7 +206,10 @@ impl MentionUri {
                 Some(path)
             }
             Self::GitDiff { cwd } => Some(cwd),
-            Self::Thread { .. } | Self::Skill { .. } | Self::Extension { .. } => None,
+            Self::Thread { .. }
+            | Self::Skill { .. }
+            | Self::Extension { .. }
+            | Self::Profile { .. } => None,
         }
     }
 
@@ -216,7 +230,7 @@ impl MentionUri {
             }
             | Self::Selection { path, range } => format!("{}:{}", base(path), range.fragment()),
             Self::File { path, .. } | Self::Directory { path } => base(path),
-            Self::Thread { id } => id.clone(),
+            Self::Thread { id } | Self::Profile { id } => id.clone(),
             Self::GitDiff { .. } => "diff".into(),
             Self::Skill { name } | Self::Extension { name } => name.clone(),
         }
@@ -457,6 +471,9 @@ mod tests {
             MentionUri::Extension {
                 name: "github".into(),
             },
+            MentionUri::Profile {
+                id: "research".into(),
+            },
         ]
     }
 
@@ -487,6 +504,7 @@ mod tests {
         assert_eq!(all()[4].to_uri(), "zlo://thread/thread-123_abc");
         assert_eq!(all()[5].to_uri(), "zlo://git-diff/repo");
         assert_eq!(all()[6].to_uri(), "zlo://selection/repo/b.rs#L3-9");
+        assert_eq!(all()[9].to_uri(), "zlo://profile/research");
     }
 
     #[test]
@@ -501,6 +519,9 @@ mod tests {
             "zlo://selection/repo/x",
             "zlo://thread/a%2Fb",
             "zlo://thread/",
+            "zlo://profile/",
+            "zlo://profile/a%2Fb",
+            "zlo://profile/x#L1",
             "zlo://nope/x",
             "https://example.com",
             "file:///repo/a.rs#L0",

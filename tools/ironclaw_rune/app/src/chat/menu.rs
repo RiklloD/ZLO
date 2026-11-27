@@ -2,7 +2,7 @@
 //! new-thread screen: its inventory, highlight, keys and popover.
 //!
 //! `@` lists mentions first (the Changes selection, files, folders, recent
-//! threads; `zlo_client::mentions`), then tools and skills. A
+//! threads, profiles; `zlo_client::mentions`), then tools and skills. A
 //! picked mention becomes an atomic pill in the composer.
 //!
 //! A composer owns a [`ComposerMenu`] and finds it again through a
@@ -20,8 +20,8 @@ use zlo_client::commands::{
     MenuItem, MenuSources, complete_mention, menu_matches_with, tab_complete, trigger_token,
 };
 use zlo_client::mentions::{
-    self, FileIndex, IndexCache, LineRange, MentionContext, MentionKind, RankedPaths, Ranking,
-    ThreadEntry,
+    self, FileIndex, IndexCache, LineRange, MentionContext, MentionKind, ProfileEntry, RankedPaths,
+    Ranking, ThreadEntry,
 };
 use zlo_client::product_wire::RebornProductCommandInfo;
 use zlo_client::{Client, ClientError};
@@ -95,6 +95,7 @@ impl ComposerMenu {
         let ctx = MentionContext {
             index: self.files.as_deref(),
             threads: &[],
+            profiles: &[],
             selection: self
                 .selection
                 .as_ref()
@@ -398,6 +399,18 @@ fn thread_entries(rows: Vec<zlo_client::inbox::InboxRow>) -> Vec<ThreadEntry> {
     threads
 }
 
+/// Profiles from the inbox list, in its order (most recently used first).
+fn profile_entries(profiles: Vec<zlo_client::inbox::InboxProfile>) -> Vec<ProfileEntry> {
+    profiles
+        .into_iter()
+        .map(|p| ProfileEntry {
+            profile_id: p.profile_id,
+            display_name: p.display_name,
+            folder: p.folder,
+        })
+        .collect()
+}
+
 /// Fetch the menu's inventory. Skills, extensions and threads only enrich
 /// it, so a failed fetch leaves those sections empty.
 pub async fn load(c: Client, commands: bool) -> Result<MenuSources, ClientError> {
@@ -412,9 +425,10 @@ pub async fn load(c: Client, commands: bool) -> Result<MenuSources, ClientError>
         .await
         .map(|l| l.extensions)
         .unwrap_or_default();
-    let threads = c.inbox().await.map(|l| l.rows).unwrap_or_default();
+    let inbox = c.inbox().await.unwrap_or_default();
     Ok(MenuSources {
-        threads: thread_entries(threads),
+        threads: thread_entries(inbox.rows),
+        profiles: profile_entries(inbox.profiles),
         commands,
         skills: skills
             .into_iter()
@@ -530,6 +544,7 @@ pub fn kind_icon(kind: MentionKind) -> &'static Icon {
         MentionKind::Folder => &icons::FOLDER,
         MentionKind::Thread => &icons::MESSAGES_SQUARE,
         MentionKind::Changes => &icons::FILE_DIFF,
+        MentionKind::Profile => &icons::CIRCLE_USER,
     }
 }
 
@@ -540,6 +555,7 @@ pub fn uri_kind(uri: &mentions::MentionUri) -> MentionKind {
         U::File { .. } => MentionKind::File,
         U::Directory { .. } => MentionKind::Folder,
         U::Thread { .. } => MentionKind::Thread,
+        U::Profile { .. } => MentionKind::Profile,
         U::GitDiff { .. } | U::Selection { .. } | U::Skill { .. } | U::Extension { .. } => {
             MentionKind::Changes
         }

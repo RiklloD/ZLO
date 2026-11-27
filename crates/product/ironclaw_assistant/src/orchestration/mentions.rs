@@ -1,7 +1,7 @@
 //! `@`-mentions expanded at send time (ZLO's rich mentions).
 //!
-//! A message names files, folders, threads, the git diff or a Changes-tab
-//! selection as [`MentionUri`] links. Before the turn runs, each one becomes
+//! A message names files, folders, threads, profiles, the git diff or a
+//! Changes-tab selection as [`MentionUri`] links. Before the turn runs, each one becomes
 //! context appended after [`MENTION_CONTEXT_OPEN`]: the stored message keeps
 //! the typed text first, and clients show only that part.
 //!
@@ -12,8 +12,15 @@
 //! runs `git` or any other program: a checkout's config can name commands
 //! (filters, fsmonitor, a lazy-fetch transport) that would run on its
 //! behalf. So git diff mentions are refused until the diff can be computed
-//! in-process, and folders are listed through descriptors. Thread mentions
-//! resolve only against the caller's own threads ([`ThreadDigests`]).
+//! in-process, and folders are listed through descriptors. Thread and
+//! profile mentions resolve only against the caller's own ([`MentionLookups`]).
+//!
+//! Profiles: `@Research` means "use the Research profile for this". A
+//! profile mention becomes host-written guidance (outside the
+//! untrusted-content wrapper, like a triage session): which profile it is,
+//! its folder and the start of its soul, and that the way to use it is a
+//! `t3_delegate` subagent with `target.profile`, the one way a thread runs
+//! work as another profile.
 //!
 //! The thread workspace: a mention of `/workspace/...` (what ZLO writes for
 //! a remote backend's files, which it lists through the workspace views)
@@ -88,6 +95,12 @@ const THREAD_MESSAGES: usize = 8;
 const THREAD_MESSAGE_CHARS: usize = 1_500;
 /// Mentions one message may expand; the rest stay links.
 const MAX_MENTIONS: usize = 24;
+/// Characters of a mentioned profile's soul shown, so the agent knows what
+/// the profile is for.
+const PROFILE_SOUL_CHARS: usize = 600;
+/// The heading of the profile guidance block.
+const PROFILE_HEADING: &str = "ZLO profiles the user @-mentioned (written by the backend \
+     itself from the user's own profile settings):";
 /// Smallest room worth opening a context block for.
 const MIN_CONTEXT: usize = 256;
 /// The wrapper's source line.
@@ -111,11 +124,26 @@ pub(super) struct ThreadDigest {
     pub(super) messages: Vec<(&'static str, String)>,
 }
 
-/// Reads mentioned threads for the sender. `None` when the thread is not one
-/// of the caller's (or is gone): the mention then stays a link.
+/// What a profile mention carries, already scoped to the caller.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct ProfileDigest {
+    pub(super) display_name: String,
+    /// The folder its threads work in.
+    pub(super) folder: String,
+    /// Its SOUL.md text (may be empty).
+    pub(super) soul: String,
+    pub(super) default_model: Option<String>,
+    /// The profile the sending thread already runs on.
+    pub(super) is_current: bool,
+}
+
+/// Reads mentioned threads and profiles for the sender. `None` when the
+/// target is not one of the caller's (or is gone): a thread mention then
+/// stays a link, a profile mention says it is unavailable.
 #[async_trait]
-pub(super) trait ThreadDigests: Send + Sync {
+pub(super) trait MentionLookups: Send + Sync {
     async fn digest(&self, thread_id: &str) -> Option<ThreadDigest>;
+    async fn profile(&self, profile_id: &str) -> Option<ProfileDigest>;
 }
 
 /// Where the host reads from for a message, beyond the client's roots.
@@ -143,18 +171,25 @@ pub(super) async fn expand(
     roots: &[String],
     host: HostFolders<'_>,
     runtime: MentionRuntime,
-    threads: &dyn ThreadDigests,
+    threads: &dyn MentionLookups,
     limit: usize,
 ) -> String {
     let typed = strip_mention_context(content);
     let mut text = String::with_capacity(typed.len());
     let mut mentions: Vec<MentionSpan> = Vec::new();
+    let mut profiles: Vec<MentionSpan> = Vec::new();
     for part in mention_parts(typed) {
         match part {
             MentionPart::Text(t) => text.push_str(t),
             MentionPart::Mention(span) => match &span.uri {
                 MentionUri::Skill { name } => text.push_str(&format!("/{name}")),
                 MentionUri::Extension { name } => text.push_str(&format!("@{name}")),
+                MentionUri::Profile { .. } => {
+                    text.push_str(&typed[span.range.clone()]);
+                    if !profiles.iter().any(|m| m.uri == span.uri) {
+                        profiles.push(span);
+                    }
+                }
                 _ => {
                     text.push_str(&typed[span.range.clone()]);
                     if !mentions.iter().any(|m| m.uri == span.uri) {
@@ -173,7 +208,7 @@ pub(super) async fn expand(
     else {
         return text;
     };
-    if mentions.is_empty() {
+    if mentions.is_empty() && profiles.is_empty() {
         return text;
     }
     let workspace = host
@@ -183,8 +218,9 @@ pub(super) async fn expand(
     let detector = LeakDetector::new();
     let mut blocks: Vec<String> = Vec::new();
     let mut used = 0usize;
-    // A triage session's files first: they are what the message is for.
-    let mut trusted: Option<String> = None;
+    // Host-written blocks go outside the wrapper. A triage session's files
+    // first: they are what the message is for.
+    let mut trusted_blocks: Vec<String> = Vec::new();
     if let Some(sessions) = host.triage
         && let Some(ix) = mentions.iter().position(is_triage_link)
         && let Some(block) = triage_block(&mentions[ix], sessions).await
@@ -192,10 +228,18 @@ pub(super) async fn expand(
         let (block, _) = detector.redact_all_secrets(&block);
         if block.len() + 2 <= budget {
             used += block.len() + 2;
-            trusted = Some(block);
+            trusted_blocks.push(block);
             mentions.remove(ix);
         }
     }
+    if let Some(block) = profiles_block(&profiles, threads).await {
+        let (block, _) = detector.redact_all_secrets(&block);
+        if block.len() + 2 <= budget.saturating_sub(used) {
+            used += block.len() + 2;
+            trusted_blocks.push(block);
+        }
+    }
+    let trusted = (!trusted_blocks.is_empty()).then(|| trusted_blocks.join("\n\n"));
     for (ix, span) in mentions.iter().enumerate() {
         let block = if ix >= MAX_MENTIONS {
             format!(
@@ -299,11 +343,70 @@ async fn triage_block(span: &MentionSpan, sessions: &Path) -> Option<String> {
     }
 }
 
+/// The guidance for every mentioned profile, `None` when there are none.
+async fn profiles_block(spans: &[MentionSpan], lookups: &dyn MentionLookups) -> Option<String> {
+    if spans.is_empty() {
+        return None;
+    }
+    let mut lines = vec![PROFILE_HEADING.to_string()];
+    for span in spans.iter().take(MAX_MENTIONS) {
+        let MentionUri::Profile { id } = &span.uri else {
+            continue;
+        };
+        let label = &span.label;
+        let Some(profile) = lookups.profile(id).await else {
+            lines.push(format!(
+                "- @{label}: profile `{id}` is not available (unknown or archived); \
+                 tell the user instead of guessing."
+            ));
+            continue;
+        };
+        lines.push(profile_line(label, id, &profile));
+    }
+    Some(lines.join("\n"))
+}
+
+fn profile_line(label: &str, id: &str, profile: &ProfileDigest) -> String {
+    let name = profile.display_name.trim();
+    let name = if name.is_empty() { id } else { name };
+    let model = profile
+        .default_model
+        .as_deref()
+        .map(|m| format!(", default model {m}"))
+        .unwrap_or_default();
+    let mut line = format!(
+        "- @{label}: the profile \"{name}\" (id `{id}`), working in {}{model}.",
+        profile.folder
+    );
+    if profile.is_current {
+        line.push_str(" This thread already runs on it: do the work here.");
+    } else {
+        line.push_str(&format!(
+            " To use it, give the part of the work it should do to a subagent on that \
+             profile: t3_delegate with context=\"brief\" and target.profile=\"{id}\". The \
+             child sees only your brief, so include every fact, path and constraint it \
+             needs; it runs with that profile's own instructions, skills, tools and folder."
+        ));
+    }
+    let soul = profile.soul.trim();
+    if !soul.is_empty() {
+        let excerpt: String = soul.chars().take(PROFILE_SOUL_CHARS).collect();
+        let more = if excerpt.len() < soul.len() {
+            " …"
+        } else {
+            ""
+        };
+        let excerpt = excerpt.split_whitespace().collect::<Vec<_>>().join(" ");
+        line.push_str(&format!(" Its instructions begin: \"{excerpt}{more}\""));
+    }
+    line
+}
+
 async fn expand_one(
     span: &MentionSpan,
     roots: &Roots,
     runtime: MentionRuntime,
-    threads: &dyn ThreadDigests,
+    threads: &dyn MentionLookups,
 ) -> String {
     let label = &span.label;
     let uri = &span.uri;
@@ -355,7 +458,8 @@ async fn path_block(span: &MentionSpan, roots: &Roots, runtime: MentionRuntime) 
         MentionUri::GitDiff { .. }
         | MentionUri::Thread { .. }
         | MentionUri::Skill { .. }
-        | MentionUri::Extension { .. } => {
+        | MentionUri::Extension { .. }
+        | MentionUri::Profile { .. } => {
             format!("@{label}: nothing to expand.")
         }
     }
@@ -544,12 +648,18 @@ mod tests {
     use std::collections::HashMap;
 
     #[derive(Default)]
-    struct Threads(HashMap<String, ThreadDigest>);
+    struct Threads(
+        HashMap<String, ThreadDigest>,
+        HashMap<String, ProfileDigest>,
+    );
 
     #[async_trait]
-    impl ThreadDigests for Threads {
+    impl MentionLookups for Threads {
         async fn digest(&self, thread_id: &str) -> Option<ThreadDigest> {
             self.0.get(thread_id).cloned()
+        }
+        async fn profile(&self, profile_id: &str) -> Option<ProfileDigest> {
+            self.1.get(profile_id).cloned()
         }
     }
 
@@ -775,6 +885,94 @@ mod tests {
         );
         assert!(out.contains("4 earlier messages omitted"), "{out}");
         assert!(out.contains("@Other: thread not available."), "{out}");
+    }
+
+    #[tokio::test]
+    async fn profiles_become_delegation_guidance_outside_the_wrapper() {
+        let mut lookups = Threads::default();
+        lookups.1.insert(
+            "research".into(),
+            ProfileDigest {
+                display_name: "Research".into(),
+                folder: "/Users/me/research".into(),
+                soul: format!("You dig through papers.\n{}", "x".repeat(2_000)),
+                default_model: Some("opus".into()),
+                is_current: false,
+            },
+        );
+        lookups.1.insert(
+            "default".into(),
+            ProfileDigest {
+                display_name: "Default".into(),
+                folder: "/Users/me/.ironclaw/profiles/default".into(),
+                is_current: true,
+                ..ProfileDigest::default()
+            },
+        );
+        let link = |id: &str, label: &str| MentionUri::Profile { id: id.into() }.to_link(label);
+        let typed = format!(
+            "ask {} then {} and {} and {} again",
+            link("research", "Research"),
+            link("default", "Default"),
+            link("gone", "Gone"),
+            link("research", "Research"),
+        );
+        for runtime in [MentionRuntime::Loop, MentionRuntime::Cli] {
+            let out = expand(
+                &typed,
+                &[],
+                HostFolders::default(),
+                runtime,
+                &lookups,
+                60_000,
+            )
+            .await;
+            assert_eq!(
+                strip_mention_context(&out),
+                typed,
+                "typed text stays as sent"
+            );
+            let block = context(&out);
+            assert!(block.contains(PROFILE_HEADING), "{out}");
+            assert!(
+                !block.contains("EXTERNAL, UNTRUSTED"),
+                "profile guidance is host-written: {out}"
+            );
+            assert!(
+                block
+                    .contains("t3_delegate with context=\"brief\" and target.profile=\"research\""),
+                "{out}"
+            );
+            assert!(block.contains("working in /Users/me/research, default model opus"));
+            assert!(block.contains("You dig through papers."), "{out}");
+            assert!(
+                !block.contains(&"x".repeat(PROFILE_SOUL_CHARS + 1)),
+                "soul is cut"
+            );
+            assert!(block.contains("This thread already runs on it"), "{out}");
+            assert!(block.contains("profile `gone` is not available"), "{out}");
+            assert_eq!(block.matches("(id `research`)").count(), 1, "deduplicated");
+        }
+        // Profiles and files mix: the guidance first, then the wrapped files.
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.txt");
+        std::fs::write(&a, "alpha").unwrap();
+        let roots = vec![dir.path().to_string_lossy().into_owned()];
+        let mixed = format!("{} {}", link("research", "Research"), file(&a, None));
+        let out = expand(
+            &mixed,
+            &roots,
+            HostFolders::default(),
+            MentionRuntime::Loop,
+            &lookups,
+            60_000,
+        )
+        .await;
+        let block = context(&out);
+        let guide = block.find(PROFILE_HEADING).expect("guidance");
+        let wrapped = block.find("EXTERNAL, UNTRUSTED").expect("wrapped file");
+        assert!(guide < wrapped, "{out}");
+        assert!(block.contains("alpha"), "{out}");
     }
 
     #[tokio::test]

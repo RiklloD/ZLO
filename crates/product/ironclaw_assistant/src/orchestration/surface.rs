@@ -141,13 +141,16 @@ const HANDOFF_SEP: &str = "\n\n---\n\n";
 /// Messages of a mentioned thread read for its digest.
 const MENTION_THREAD_TIMELINE: u64 = 40;
 
-/// Mentioned threads, read as the sender: the orchestrator's record for the
-/// title and the scoped timeline view for its messages, so a thread the
-/// caller does not own reads as missing.
+/// Mentioned threads and profiles, read as the sender: the orchestrator's
+/// record for the title and the scoped timeline view for its messages, so a
+/// thread the caller does not own reads as missing; profiles from the
+/// caller's own active ones.
 struct CallerThreads<'a> {
     surface: &'a OrchestratedProductSurface,
     caller: &'a ProductSurfaceCaller,
     scope: &'a ThreadScope,
+    /// The profile the sending thread runs on (`None`: the default one).
+    current_profile: Option<&'a str>,
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -180,7 +183,7 @@ struct DigestSummary {
 }
 
 #[async_trait]
-impl super::mentions::ThreadDigests for CallerThreads<'_> {
+impl super::mentions::MentionLookups for CallerThreads<'_> {
     async fn digest(&self, thread_id: &str) -> Option<super::mentions::ThreadDigest> {
         let id = ThreadId::new(thread_id).ok()?;
         let title = match self.surface.engine.owned_thread(&id, self.scope).await {
@@ -230,6 +233,37 @@ impl super::mentions::ThreadDigests for CallerThreads<'_> {
             title,
             summary: page.summary_artifacts.into_iter().last().map(|s| s.content),
             messages,
+        })
+    }
+
+    async fn profile(&self, profile_id: &str) -> Option<super::mentions::ProfileDigest> {
+        let id = ironclaw_orchestrator::profiles::parse_profile_slug(profile_id).ok()?;
+        let owner = ironclaw_orchestrator::profiles::ProfileOwner::from(self.scope);
+        let record = match self
+            .surface
+            .engine
+            .store()
+            .profile(&owner, &id, false)
+            .await
+        {
+            Ok(Some(record)) => record,
+            Ok(None) => return None,
+            Err(error) => {
+                tracing::debug!(%error, "mentioned profile could not be read");
+                return None;
+            }
+        };
+        let folder = match self.surface.home() {
+            Ok(home) => home.folder(&record).to_string_lossy().into_owned(),
+            Err(_) => record.settings.working_folder.clone().unwrap_or_default(),
+        };
+        let current = self.current_profile.unwrap_or(DEFAULT_PROFILE_ID);
+        Some(super::mentions::ProfileDigest {
+            display_name: record.settings.display_name,
+            folder,
+            soul: record.settings.soul,
+            default_model: record.settings.default_model,
+            is_current: record.profile_id.as_str() == current,
         })
     }
 }
@@ -959,10 +993,20 @@ impl ProductSurface for OrchestratedProductSurface {
                         } else {
                             (super::mentions::MentionRuntime::Loop, MENTION_LOOP_LIMIT)
                         };
+                        let current_profile = if typed.contains("](zlo://profile/") {
+                            self.engine
+                                .owned_thread(&id, &scope)
+                                .await
+                                .ok()
+                                .and_then(|t| t.profile_id)
+                        } else {
+                            None
+                        };
                         let threads = CallerThreads {
                             surface: self,
                             caller: &caller,
                             scope: &scope,
+                            current_profile: current_profile.as_ref().map(|p| p.as_str()),
                         };
                         let in_front = handoff.as_ref().map_or(0, |c| c.len() + HANDOFF_SEP.len());
                         let home = std::env::home_dir();
