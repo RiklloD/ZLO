@@ -114,9 +114,9 @@ pub(super) fn reserve_height(chat: &ChatState) -> f32 {
 struct Rows {
     thread: String,
     items: Rc<Vec<Item>>,
-    /// The run "fork from here" offers on each row: only a settled run's
-    /// answer has one (see [`fork_runs`]).
-    fork_run: Vec<Option<u32>>,
+    /// Which rows are a stopped turn's answer, the only replies with the
+    /// copy and fork bar (see [`answers`]).
+    answers: Vec<Option<Answer>>,
     /// The newest prompt, while a send's reserve is in play.
     turn_start: Option<usize>,
     outputs: Arc<HashMap<String, CliBody>>,
@@ -153,21 +153,21 @@ impl Rows {
                     streaming: false,
                 },
             ) => {
-                let fork = self.fork_run.get(ix).copied().flatten();
+                let answer = self.answers.get(ix).copied().flatten();
                 let copied = chat.copied.as_ref().is_some_and(|(c, _)| c == key);
                 // A finished reply only changes with its text, its copy
-                // check, its run and the look: keep its parsed Markdown.
-                let version = (text.as_str(), copied, fork, self.look);
+                // check, whether it is the answer and the look: keep its
+                // parsed Markdown.
+                let version = (text.as_str(), copied, answer, self.look);
                 memo(format!("{key}-group"), version, || {
-                    rows::with_actions(
-                        chat,
-                        key,
-                        text,
-                        false,
-                        fork,
-                        rows::render_row(s, chat, row_, k),
-                        k,
-                    )
+                    let body = rows::render_row(s, chat, row_, k);
+                    match answer {
+                        Some(a) => rows::with_actions(chat, key, text, false, a.fork, body, k),
+                        // Words between steps (or a turn still working):
+                        // no bar to copy or fork them. Same key, so the
+                        // reply keeps its element when it becomes the answer.
+                        None => col().key(format!("{key}-group")).w_full().child(body),
+                    }
                 })
             }
             Item::Row(
@@ -339,25 +339,36 @@ impl Rows {
     }
 }
 
-/// Which rows offer "fork from here", and the run it forks at (1-based,
-/// counted by prompts and steers, as the backend counts its user messages):
-/// only a turn's answer, its last reply, once the turn has stopped. Words
-/// the agent says between steps never offer one. A steer stays inside its
-/// turn, so the fork keeps the whole run, steers included. The live turn is
-/// the one the fold put its working line under (`flow::fold_turns`), so the
-/// fork follows what the transcript shows. Rows borrowed from another thread
-/// never offer one.
-pub(super) fn fork_runs(items: &[Item]) -> Vec<Option<u32>> {
+/// A stopped turn's answer: the reply that carries the copy and fork bar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) struct Answer {
+    /// The run "fork from here" cuts after (1-based, counted by prompts and
+    /// steers, as the backend counts its user messages); `None` on a reply
+    /// borrowed from another thread.
+    pub fork: Option<u32>,
+}
+
+/// Which rows are a turn's answer, its last reply, once the turn has
+/// stopped: only those get the copy and fork bar. Words the agent says
+/// between steps get none, and nothing of a turn still working does. A steer
+/// stays inside its turn, so the fork keeps the whole run, steers included.
+/// The live turn is the one the fold put its working line under
+/// (`flow::fold_turns`), so the bar follows what the transcript shows.
+pub(super) fn answers(items: &[Item]) -> Vec<Option<Answer>> {
     let mut out = vec![None; items.len()];
     let mut run = 0u32;
-    // The open turn: its answer so far, and whether it is still working.
-    let mut answer: Option<usize> = None;
+    // The open turn: its answer so far (and whether it is borrowed), and
+    // whether it is still working.
+    let mut answer: Option<(usize, bool)> = None;
     let mut working = false;
-    let settle = |out: &mut Vec<Option<u32>>, answer: Option<usize>, working: bool, run: u32| {
-        if let Some(ix) = answer.filter(|_| run > 0 && !working) {
-            out[ix] = Some(run);
-        }
-    };
+    let settle =
+        |out: &mut Vec<Option<Answer>>, answer: Option<(usize, bool)>, working: bool, run: u32| {
+            if let Some((ix, borrowed)) = answer.filter(|_| !working) {
+                out[ix] = Some(Answer {
+                    fork: (!borrowed && run > 0).then_some(run),
+                });
+            }
+        };
     for (ix, item) in items.iter().enumerate() {
         match item {
             Item::Row(Row::User { key, steer, .. }) => {
@@ -369,8 +380,8 @@ pub(super) fn fork_runs(items: &[Item]) -> Vec<Option<u32>> {
                     run += 1;
                 }
             }
-            Item::Row(Row::Assistant { key, .. }) if !key.starts_with(PREFIX_KEY) => {
-                answer = Some(ix);
+            Item::Row(Row::Assistant { key, .. }) => {
+                answer = Some((ix, key.starts_with(PREFIX_KEY)));
             }
             // The working line right under a prompt marks its turn live; at
             // the end of the list (the run's prompt not loaded yet) it leaves
@@ -401,7 +412,7 @@ pub(super) fn transcript(s: &State, chat: &ChatState, k: &Kit) -> El {
         .iter()
         .rposition(|i| matches!(i, Item::Row(Row::User { .. })))
         .filter(|_| chat.reserve.is_some());
-    let fork_run = fork_runs(&items);
+    let answers = answers(&items);
     let reserve_h = reserve_height(chat);
     // While the reserve keeps room under it, the newest prompt is the turn's
     // anchor at the top of the list; once the answer fills the room the list
@@ -414,7 +425,7 @@ pub(super) fn transcript(s: &State, chat: &ChatState, k: &Kit) -> El {
     let rows = Rc::new(Rows {
         thread: id.clone(),
         items,
-        fork_run,
+        answers,
         turn_start,
         outputs: chat.transcript.tool_outputs(),
         reserve_h,
@@ -523,10 +534,19 @@ mod tests {
 
     /// The keys that offer "fork from here", with their run.
     fn forks(items: &[Item]) -> Vec<(String, u32)> {
-        fork_runs(items)
+        answers(items)
             .into_iter()
             .zip(items)
-            .filter_map(|(run, item)| run.map(|r| (item.key().to_string(), r)))
+            .filter_map(|(a, item)| a?.fork.map(|r| (item.key().to_string(), r)))
+            .collect()
+    }
+
+    /// The keys that carry the copy and fork bar at all.
+    fn bars(items: &[Item]) -> Vec<String> {
+        answers(items)
+            .into_iter()
+            .zip(items)
+            .filter_map(|(a, item)| a.map(|_| item.key().to_string()))
             .collect()
     }
 
@@ -550,6 +570,12 @@ mod tests {
             reply("p1-answer"),
         ];
         assert_eq!(forks(&settled), [fork("p1-answer", 1)]);
+        // The words between steps get no bar at all, not even copy; a
+        // borrowed answer keeps its copy without a fork.
+        assert_eq!(
+            bars(&settled),
+            [format!("{PREFIX_KEY}a"), "p1-answer".into()]
+        );
 
         // The live turn: the fold's working line under its prompt.
         let mut live = settled.clone();
@@ -561,6 +587,7 @@ mod tests {
             reply("p2-mid"),
         ]);
         assert_eq!(forks(&live), [fork("p1-answer", 1)]);
+        assert!(!bars(&live).iter().any(|k| k.starts_with("p2")));
         // Stopped, its last reply is the answer.
         live.retain(|i| !matches!(i, Item::Working));
         assert_eq!(forks(&live), [fork("p1-answer", 1), fork("p2-mid", 2)]);
