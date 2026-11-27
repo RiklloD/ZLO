@@ -35,6 +35,8 @@ struct Recorder {
     /// Report every unread steer back as not kept (a failing queue).
     refuse_steers: std::sync::atomic::AtomicBool,
     telemetry: Mutex<Vec<TurnTelemetry>>,
+    /// `Settings::idle_compact_claude` as the engine would read it.
+    idle_compact: std::sync::atomic::AtomicBool,
 }
 
 #[async_trait]
@@ -51,6 +53,9 @@ impl TurnEventSink for Recorder {
     }
     async fn turn_telemetry(&self, _: &ThreadId, telemetry: TurnTelemetry, _: Millis) {
         self.telemetry.lock().unwrap().push(telemetry);
+    }
+    async fn idle_compact_enabled(&self) -> bool {
+        self.idle_compact.load(std::sync::atomic::Ordering::SeqCst)
     }
     async fn steers_unread(
         &self,
@@ -378,6 +383,85 @@ async fn a_compact_turn_reports_the_context_it_left() {
     assert_eq!(
         (t.context_used, t.context_max),
         (Some(9_000), Some(200_000))
+    );
+}
+
+/// A turn that leaves a large context, then the idle `/compact` run on the
+/// same session. The real CLI compacts, prints its result and then does not
+/// exit on closed input; before the post-result grace every idle compaction
+/// waited out its 4-minute timeout, was killed and logged as failed, and
+/// the context meter never learned what it left. `@DIR@` is the test dir.
+const IDLE_COMPACTS_THEN_LINGERS: &str = r#"#!/bin/sh
+trap '' TERM
+read -r prompt
+case "$prompt" in
+*/compact*)
+  set -m
+  sleep 600 &
+  echo $! > @DIR@/background.pid
+  set +m
+  echo '{"type":"system","subtype":"compact_boundary","session_id":"s","uuid":"b","compact_metadata":{"pre_tokens":170010,"post_tokens":9000,"trigger":"manual"}}'
+  echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":600,"duration_api_ms":500,"num_turns":1,"result":"","session_id":"s","total_cost_usd":0.01,"usage":{"input_tokens":10,"cache_read_input_tokens":170000,"cache_creation_input_tokens":0,"output_tokens":900},"modelUsage":{"claude-haiku-5-5":{"inputTokens":10,"outputTokens":900,"cacheReadInputTokens":170000,"cacheCreationInputTokens":0,"webSearchRequests":0,"costUSD":0.01,"contextWindow":200000,"maxOutputTokens":32000}}}'
+  while :; do sleep 1; done
+  ;;
+*)
+  echo '{"type":"assistant","message":{"id":"m","type":"message","role":"assistant","model":"claude-haiku-5-5","content":[{"type":"text","text":"Done"}],"usage":{"input_tokens":10,"cache_read_input_tokens":170000,"cache_creation_input_tokens":0,"output_tokens":50}},"session_id":"s","uuid":"a1"}'
+  echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":600,"duration_api_ms":500,"num_turns":1,"result":"Done","session_id":"s","total_cost_usd":0.01,"usage":{"input_tokens":10,"cache_read_input_tokens":170000,"cache_creation_input_tokens":0,"output_tokens":50},"modelUsage":{"claude-haiku-5-5":{"inputTokens":10,"outputTokens":50,"cacheReadInputTokens":170000,"cacheCreationInputTokens":0,"webSearchRequests":0,"costUSD":0.01,"contextWindow":200000,"maxOutputTokens":32000}}}'
+  ;;
+esac
+"#;
+
+#[tokio::test]
+async fn an_idle_compaction_whose_cli_outlives_its_result_still_succeeds() {
+    let dir = tempfile::tempdir().unwrap();
+    let sink = Arc::new(Recorder::default());
+    sink.idle_compact
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let binary = script(
+        dir.path(),
+        "claude",
+        &IDLE_COMPACTS_THEN_LINGERS.replace("@DIR@", &dir.path().display().to_string()),
+    );
+    let rt = runtime(dir.path(), binary, &sink)
+        .with_idle_delay(Duration::from_millis(200))
+        .with_exit_grace(Duration::from_millis(500));
+    let thread = thread(&rt).await;
+    rt.start_turn(&thread, input()).await.unwrap();
+    wait_for(|| sink.finished.lock().unwrap().len() == 1).await;
+
+    let log = dir.path().join("usage").join("compactions.jsonl");
+    let started = std::time::Instant::now();
+    wait_for(|| log.exists()).await;
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "compaction logged only after {:?}",
+        started.elapsed()
+    );
+    let rows: Vec<serde_json::Value> = std::fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["ok"], true, "{:?}", rows[0]);
+    assert_eq!(rows[0]["error"], serde_json::Value::Null);
+    assert_eq!(rows[0]["tokensBefore"], 170_010);
+    assert_eq!(rows[0]["tokensAfter"], 9_000);
+    // The meter drops to what the compaction left, without a new turn.
+    let last = sink.telemetry.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(last.context_used, Some(9_000));
+    // No turn reports the compaction.
+    assert_eq!(sink.finished.lock().unwrap().len(), 1);
+    // The lingering CLI and its detached work were ended.
+    let pid = std::fs::read_to_string(dir.path().join("background.pid")).unwrap();
+    let pgid = std::process::Command::new("ps")
+        .args(["-o", "pgid=", "-p", pid.trim()])
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&pgid.stdout).trim().is_empty(),
+        "detached background process {} survived the compaction",
+        pid.trim()
     );
 }
 
