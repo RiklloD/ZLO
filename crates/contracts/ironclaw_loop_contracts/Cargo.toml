@@ -21,7 +21,7 @@ hex = { workspace = true }
 ironclaw_host_api = { path = "../ironclaw_host_api", version = "0.1.0" }
 ironclaw_extension_contracts = { path = "../ironclaw_extension_contracts", version = "0.1.0" }
 serde = { workspace = true, features = ["derive"] }
-serde_jcs = "0.2"
+serde_jcs = "0.3"
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
