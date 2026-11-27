@@ -322,9 +322,11 @@ async fn submit_turn_records_skill_activation_message_before_turn_wake() {
 
     // What ZLO expanded from @-mentions (a mentioned profile's soul, a
     // file) is data: only the typed words pick skills and tools.
-    let typed = "/code-review ask [@Research](zlo://profile/research)";
+    // A chip labelled like a tool is not a request for it, and notes added
+    // after the context (attachments) do not bring the context back.
+    let typed = "/code-review ask [@github](zlo://profile/research)";
     let content = format!(
-        "{typed}{}/release-everything and @payments{}",
+        "{typed}{}/release-everything and @payments{}\n[Attached: shot.png]",
         ironclaw_product_contracts::mention::MENTION_CONTEXT_OPEN,
         ironclaw_product_contracts::mention::MENTION_CONTEXT_CLOSE,
     );
@@ -342,7 +344,7 @@ async fn submit_turn_records_skill_activation_message_before_turn_wake() {
         .expect("submit succeeds");
     let recorded = recorded.lock().expect("lock");
     assert_eq!(recorded.len(), 2, "{recorded:?}");
-    assert_eq!(recorded[1].2, typed);
+    assert_eq!(recorded[1].2, "/code-review ask github");
 }
 
 #[tokio::test]

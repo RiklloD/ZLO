@@ -233,7 +233,9 @@ impl CliSkills {
                 )
                 .await;
         }
-        let requested_names = requested_skills(text, &catalog);
+        // Only typed words ask for skills, never expanded mention context.
+        let typed = ironclaw_product_contracts::mention::selection_text(text);
+        let requested_names = requested_skills(&typed, &catalog);
         let decided = decide(
             &document,
             &catalog,

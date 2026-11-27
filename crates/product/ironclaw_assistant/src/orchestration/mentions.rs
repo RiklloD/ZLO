@@ -59,8 +59,8 @@ use std::path::Path;
 
 use async_trait::async_trait;
 use ironclaw_product_contracts::mention::{
-    LineRange, MENTION_CONTEXT_CLOSE, MENTION_CONTEXT_OPEN, MentionPart, MentionSpan, MentionUri,
-    mention_parts, strip_mention_context,
+    LineRange, MENTION_CONTEXT_CLOSE, MENTION_CONTEXT_LABEL, MENTION_CONTEXT_OPEN, MentionPart,
+    MentionSpan, MentionUri, mention_parts, strip_mention_context,
 };
 #[cfg(unix)]
 use ironclaw_product_contracts::triage::{TRIAGE_CONTEXT_FILE_NAME, TRIAGE_PROMPT_FILE_NAME};
@@ -110,10 +110,10 @@ const PROFILE_DELEGATE_LINE: &str = "start a subagent on it for the work the use
 const PROFILE_DELEGATE: &str = "To start one: t3_delegate with context=\"brief\" and \
      target.profile set to the profile's id. The child sees only your brief, so include every \
      fact, path and constraint it needs.";
-/// The opener with its rule changed, for generated text that holds it, so
-/// [`strip_mention_context`] never takes generated text for typed text.
-const MENTION_CONTEXT_OPEN_ESCAPED: &str =
-    "\n\n- - -\nMentioned context (expanded by ZLO from the @-mentions above):\n";
+/// [`MENTION_CONTEXT_LABEL`] as generated text writes it, so no opener
+/// survives inside the context and [`strip_mention_context`] never takes
+/// generated text for typed text. Same length as the label.
+const MENTION_CONTEXT_LABEL_ESCAPED: &str = "Mentioned context [expanded by ZLO";
 /// When the engine cannot start such a subagent.
 const PROFILE_NO_TOOL: &str = "If you have no t3_delegate tool, do not do that work yourself as \
      if you were that profile: tell the user this engine cannot start a subagent on another \
@@ -253,6 +253,8 @@ pub(super) async fn expand(
             mentions.remove(ix);
         }
     }
+    // An expanded triage session takes one slot of the mention quota.
+    let triage_slots = trusted_blocks.len();
     let resolved = resolve_profiles(&profiles, threads).await;
     let mut data: Vec<(String, String)> = Vec::new();
     if let Some(guide) = profile_guide(&resolved)
@@ -280,7 +282,7 @@ pub(super) async fn expand(
         let block = match pending {
             Pending::Ready(block) => block,
             // Profiles and other mentions share one quota.
-            Pending::Mention(ix, _) if ix + resolved.len() >= MAX_MENTIONS => {
+            Pending::Mention(ix, _) if ix + resolved.len() + triage_slots >= MAX_MENTIONS => {
                 format!("@{label}: not expanded (too many mentions in one message).")
             }
             Pending::Mention(_, span) => expand_one(span, &roots, runtime, threads).await,
@@ -314,7 +316,7 @@ pub(super) async fn expand(
                 }
             }
         };
-        let body = body.replace(MENTION_CONTEXT_OPEN, MENTION_CONTEXT_OPEN_ESCAPED);
+        let body = body.replace(MENTION_CONTEXT_LABEL, MENTION_CONTEXT_LABEL_ESCAPED);
         let out = format!("{text}{MENTION_CONTEXT_OPEN}{body}{MENTION_CONTEXT_CLOSE}");
         if out.len() <= limit {
             return out;
@@ -1106,6 +1108,21 @@ mod tests {
             60_000,
         )
         .await;
+        assert_eq!(strip_mention_context(&out), typed, "{out}");
+        assert_eq!(out.matches(MENTION_CONTEXT_OPEN).count(), 1, "{out}");
+
+        // Two openers sharing a newline, in a mentioned file.
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared.txt");
+        let twice = format!(
+            "{}{}",
+            MENTION_CONTEXT_OPEN.trim_end_matches('\n'),
+            MENTION_CONTEXT_OPEN
+        );
+        std::fs::write(&shared, format!("{twice}tail{MENTION_CONTEXT_CLOSE}")).unwrap();
+        let typed = format!("see {}", file(&shared, None));
+        let out = run(&typed, &[dir.path()], MentionRuntime::Loop).await;
+        assert!(out.contains("tail"), "{out}");
         assert_eq!(strip_mention_context(&out), typed, "{out}");
         assert_eq!(out.matches(MENTION_CONTEXT_OPEN).count(), 1, "{out}");
     }

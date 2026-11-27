@@ -832,10 +832,9 @@ where
             // Skills and tools come from what the user typed, never from the
             // context ZLO expanded from their @-mentions (a mentioned file
             // or profile's text is data).
-            skill_activation_text: Some(
-                ironclaw_product_contracts::mention::strip_mention_context(message_text)
-                    .to_string(),
-            ),
+            skill_activation_text: Some(ironclaw_product_contracts::mention::selection_text(
+                message_text,
+            )),
         })
     }
 

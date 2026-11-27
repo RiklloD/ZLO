@@ -307,6 +307,29 @@ pub const MENTION_CONTEXT_OPEN: &str =
 /// Ends the expanded mention context.
 pub const MENTION_CONTEXT_CLOSE: &str = "\n[End of mentioned context]";
 
+/// The words of the context opener that generated text must never hold:
+/// the backend rewrites them inside expanded context (they cannot overlap
+/// themselves, so one pass removes every opener).
+pub const MENTION_CONTEXT_LABEL: &str = "Mentioned context (expanded by ZLO";
+
+/// What the user typed, for picking skills and tools: the text before the
+/// first expanded-context opener (so context and anything appended after
+/// it, such as attachment notes, never count), with each mention link
+/// replaced by its bare label (a chip named like a tool is not a request
+/// for that tool).
+pub fn selection_text(text: &str) -> String {
+    let typed = text
+        .split_once(MENTION_CONTEXT_OPEN)
+        .map_or(text, |(typed, _)| typed);
+    mention_parts(typed)
+        .into_iter()
+        .map(|part| match part {
+            MentionPart::Text(t) => t.to_string(),
+            MentionPart::Mention(span) => span.label,
+        })
+        .collect()
+}
+
 /// The typed part of a stored message, without the expanded mention context.
 pub fn strip_mention_context(text: &str) -> &str {
     if !text.ends_with(MENTION_CONTEXT_CLOSE) {
@@ -547,6 +570,17 @@ mod tests {
         let stored = format!("{typed}{MENTION_CONTEXT_OPEN}file a.rs ...{MENTION_CONTEXT_CLOSE}");
         assert_eq!(strip_mention_context(&stored), typed);
         assert_eq!(strip_mention_context(typed), typed);
+    }
+
+    #[test]
+    fn selection_text_keeps_only_typed_words() {
+        let typed = "use /review with [@GitHub](zlo://profile/gh) now";
+        let stored = format!(
+            "{typed}{MENTION_CONTEXT_OPEN}/deploy @payments{MENTION_CONTEXT_CLOSE}\n[Attached: a.png]"
+        );
+        assert_eq!(selection_text(&stored), "use /review with GitHub now");
+        assert_eq!(selection_text("plain /x"), "plain /x");
+        assert!(MENTION_CONTEXT_OPEN.contains(MENTION_CONTEXT_LABEL));
     }
 
     #[test]
