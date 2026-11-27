@@ -114,8 +114,9 @@ pub(super) fn reserve_height(chat: &ChatState) -> f32 {
 struct Rows {
     thread: String,
     items: Rc<Vec<Item>>,
-    /// The run each row belongs to (1-based), for "fork from here".
-    run_of: Vec<u32>,
+    /// The run "fork from here" offers on each row: only a settled run's
+    /// answer has one (see [`fork_runs`]).
+    fork_run: Vec<Option<u32>>,
     /// The newest prompt, while a send's reserve is in play.
     turn_start: Option<usize>,
     outputs: Arc<HashMap<String, CliBody>>,
@@ -152,11 +153,7 @@ impl Rows {
                     streaming: false,
                 },
             ) => {
-                let fork = self
-                    .run_of
-                    .get(ix)
-                    .copied()
-                    .filter(|r| *r > 0 && !key.starts_with(PREFIX_KEY));
+                let fork = self.fork_run.get(ix).copied().flatten();
                 let copied = chat.copied.as_ref().is_some_and(|(c, _)| c == key);
                 // A finished reply only changes with its text, its copy
                 // check, its run and the look: keep its parsed Markdown.
@@ -342,6 +339,56 @@ impl Rows {
     }
 }
 
+/// Which rows offer "fork from here", and the run it forks at (1-based,
+/// counted by prompts and steers, as the backend counts its user messages):
+/// only a turn's answer, its last reply, once the turn has stopped. Words
+/// the agent says between steps never offer one. A steer stays inside its
+/// turn, so the fork keeps the whole run, steers included. The live turn is
+/// the one the fold put its working line under (`flow::fold_turns`), so the
+/// fork follows what the transcript shows. Rows borrowed from another thread
+/// never offer one.
+pub(super) fn fork_runs(items: &[Item]) -> Vec<Option<u32>> {
+    let mut out = vec![None; items.len()];
+    let mut run = 0u32;
+    // The open turn: its answer so far, and whether it is still working.
+    let mut answer: Option<usize> = None;
+    let mut working = false;
+    let settle = |out: &mut Vec<Option<u32>>, answer: Option<usize>, working: bool, run: u32| {
+        if let Some(ix) = answer.filter(|_| run > 0 && !working) {
+            out[ix] = Some(run);
+        }
+    };
+    for (ix, item) in items.iter().enumerate() {
+        match item {
+            Item::Row(Row::User { key, steer, .. }) => {
+                if steer.is_none() {
+                    settle(&mut out, answer.take(), working, run);
+                    working = false;
+                }
+                if !key.starts_with(PREFIX_KEY) {
+                    run += 1;
+                }
+            }
+            Item::Row(Row::Assistant { key, .. }) if !key.starts_with(PREFIX_KEY) => {
+                answer = Some(ix);
+            }
+            // The working line right under a prompt marks its turn live; at
+            // the end of the list (the run's prompt not loaded yet) it leaves
+            // the turn above settled, as the fold does.
+            Item::Working
+                if ix.checked_sub(1).is_some_and(|p| {
+                    matches!(items[p], Item::Row(Row::User { steer: None, .. }))
+                }) =>
+            {
+                working = true;
+            }
+            _ => {}
+        }
+    }
+    settle(&mut out, answer, working, run);
+    out
+}
+
 /// An activity group folding open or shut (`motion::ROW_RESORT`'s time).
 const FOLD: rune::Spring = crate::design::motion::ROW_RESORT;
 /// How deep a folding group's moving edge feathers, in points.
@@ -354,17 +401,7 @@ pub(super) fn transcript(s: &State, chat: &ChatState, k: &Kit) -> El {
         .iter()
         .rposition(|i| matches!(i, Item::Row(Row::User { .. })))
         .filter(|_| chat.reserve.is_some());
-    let run_of: Vec<u32> = items
-        .iter()
-        .scan(0u32, |run, item| {
-            if let Item::Row(Row::User { key, .. }) = item
-                && !key.starts_with(PREFIX_KEY)
-            {
-                *run += 1;
-            }
-            Some(*run)
-        })
-        .collect();
+    let fork_run = fork_runs(&items);
     let reserve_h = reserve_height(chat);
     // While the reserve keeps room under it, the newest prompt is the turn's
     // anchor at the top of the list; once the answer fills the room the list
@@ -377,7 +414,7 @@ pub(super) fn transcript(s: &State, chat: &ChatState, k: &Kit) -> El {
     let rows = Rc::new(Rows {
         thread: id.clone(),
         items,
-        run_of,
+        fork_run,
         turn_start,
         outputs: chat.transcript.tool_outputs(),
         reserve_h,
@@ -444,4 +481,111 @@ fn look(s: &State, column: f32) -> u64 {
     s.prefs.ui_font_size.to_bits().hash(&mut h);
     column.to_bits().hash(&mut h);
     h.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use zlo_client::transcript::{SteerMark, ToolStatus};
+
+    use super::*;
+
+    fn user(key: &str, steer: bool) -> Item {
+        Item::Row(Row::User {
+            key: key.into(),
+            text: key.into(),
+            pending: false,
+            attachments: Vec::new(),
+            steer: steer.then(SteerMark::default),
+        })
+    }
+
+    fn reply(key: &str) -> Item {
+        Item::Row(Row::Assistant {
+            key: key.into(),
+            text: key.into(),
+            streaming: false,
+        })
+    }
+
+    fn work(key: &str) -> Item {
+        Item::Activity {
+            key: key.into(),
+            rows: vec![Row::Tool {
+                key: key.into(),
+                title: "Ran ls".into(),
+                detail: None,
+                status: ToolStatus::Completed,
+                reason: None,
+            }],
+            live: false,
+        }
+    }
+
+    /// The keys that offer "fork from here", with their run.
+    fn forks(items: &[Item]) -> Vec<(String, u32)> {
+        fork_runs(items)
+            .into_iter()
+            .zip(items)
+            .filter_map(|(run, item)| run.map(|r| (item.key().to_string(), r)))
+            .collect()
+    }
+
+    fn fork(key: &str, run: u32) -> (String, u32) {
+        (key.to_string(), run)
+    }
+
+    /// The words a run says between its steps are not its answer: only the
+    /// last reply of a stopped turn offers a fork, never one still working,
+    /// never a row borrowed from another thread.
+    #[test]
+    fn only_a_stopped_runs_answer_offers_a_fork() {
+        let settled = vec![
+            user(&format!("{PREFIX_KEY}p"), false),
+            reply(&format!("{PREFIX_KEY}a")),
+            user("p1", false),
+            reply("p1-look"),
+            work("w1"),
+            reply("p1-read"),
+            work("w2"),
+            reply("p1-answer"),
+        ];
+        assert_eq!(forks(&settled), [fork("p1-answer", 1)]);
+
+        // The live turn: the fold's working line under its prompt.
+        let mut live = settled.clone();
+        live.extend([
+            user("p2", false),
+            Item::Working,
+            reply("p2-look"),
+            work("w3"),
+            reply("p2-mid"),
+        ]);
+        assert_eq!(forks(&live), [fork("p1-answer", 1)]);
+        // Stopped, its last reply is the answer.
+        live.retain(|i| !matches!(i, Item::Working));
+        assert_eq!(forks(&live), [fork("p1-answer", 1), fork("p2-mid", 2)]);
+
+        // A run whose prompt has not loaded: the working line sits at the
+        // end, and the turn above keeps its fork.
+        let mut early = settled.clone();
+        early.push(Item::Working);
+        assert_eq!(forks(&early), [fork("p1-answer", 1)]);
+    }
+
+    /// A steer is part of its run: while the run works nothing before or
+    /// after it offers a fork, and once it stops the one fork keeps the
+    /// whole run, the steer included, even when no words follow the steer.
+    #[test]
+    fn a_steer_stays_inside_its_runs_fork() {
+        let base = vec![user("p1", false), reply("p1-answer"), user("p2", false)];
+        let mut running = base.clone();
+        running.extend([Item::Working, reply("p2-suite"), user("s", true), work("w")]);
+        assert_eq!(forks(&running), [fork("p1-answer", 1)]);
+
+        running.retain(|i| !matches!(i, Item::Working));
+        assert_eq!(forks(&running), [fork("p1-answer", 1), fork("p2-suite", 3)]);
+
+        running.push(reply("s-answer"));
+        assert_eq!(forks(&running), [fork("p1-answer", 1), fork("s-answer", 3)]);
+    }
 }
