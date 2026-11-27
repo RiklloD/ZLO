@@ -515,6 +515,31 @@ pub fn fixture_draft_mention(s: &mut State) {
     }
 }
 
+/// The new-thread `@` menu offering profiles to hand work to.
+pub fn fixture_draft_mention_profile(s: &mut State) {
+    fixture_shell(s);
+    s.chat = None;
+    s.workspace.drafts_fixture("Have @re", Some("work"));
+    super::draft::open(s);
+    if let Some(d) = s.workspace.draft.as_mut() {
+        let len = d.input.text.len();
+        d.input.set_caret(len);
+        let profile = |id: &str, name: &str, folder: &str| zlo_client::mentions::ProfileEntry {
+            profile_id: id.into(),
+            display_name: name.into(),
+            folder: Some(folder.into()),
+        };
+        d.menu.sources = std::rc::Rc::new(zlo_client::commands::MenuSources {
+            profiles: vec![
+                profile("research", "Research", "/Users/zlo/research"),
+                profile("release", "Release manager", "/Users/zlo/src/ironclaw"),
+                profile("work", "Work", "/Users/zlo/work"),
+            ],
+            ..Default::default()
+        });
+    }
+}
+
 /// A sidebar thread dragged over the new-thread composer.
 pub fn fixture_thread_drag_draft(s: &mut State) {
     fixture_draft(s);

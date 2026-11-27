@@ -1,5 +1,5 @@
-//! The `@` menu's mention sources (files, folders, threads, a Changes-tab
-//! selection) and the composer's mention chips.
+//! The `@` menu's mention sources (files, folders, threads, profiles, a
+//! Changes-tab selection) and the composer's mention chips.
 //!
 //! Mentions travel as Markdown links (`ironclaw_product_contracts::mention`):
 //! the composer shows each as an atomic chip, sends it as `[@label](uri)`,
@@ -53,6 +53,8 @@ const HEAVY_DIRS: [&str; 7] = [
 const FILE_ROWS: usize = 8;
 const FOLDER_ROWS: usize = 4;
 const THREAD_ROWS: usize = 5;
+/// Profile rows when nothing is typed yet; a query shows every match.
+const PROFILE_ROWS: usize = 5;
 
 /// The files and folders under a project folder, relative to it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -406,6 +408,16 @@ pub struct ThreadEntry {
     pub last_activity_at: i64,
 }
 
+/// A profile the `@` menu can offer, from the inbox list. Mentioning one
+/// asks the agent to hand work to it (the backend explains how).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfileEntry {
+    pub profile_id: String,
+    pub display_name: String,
+    /// The folder its threads work in, shown beside it.
+    pub folder: Option<String>,
+}
+
 /// Which `@` section an entry sits in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MentionKind {
@@ -413,6 +425,7 @@ pub enum MentionKind {
     File,
     Folder,
     Thread,
+    Profile,
 }
 
 impl MentionKind {
@@ -422,6 +435,7 @@ impl MentionKind {
             Self::File => "Files",
             Self::Folder => "Folders",
             Self::Thread => "Threads",
+            Self::Profile => "Profiles",
         }
     }
 }
@@ -441,6 +455,8 @@ pub struct MentionEntry {
 pub struct MentionContext<'a> {
     pub index: Option<&'a FileIndex>,
     pub threads: &'a [ThreadEntry],
+    /// Most recently used first.
+    pub profiles: &'a [ProfileEntry],
     /// Lines picked in the Changes tab: absolute path and range.
     pub selection: Option<(&'a Path, LineRange)>,
     /// The thread the composer belongs to, left out of Threads.
@@ -554,7 +570,61 @@ pub fn mention_matches(query: &str, ctx: &MentionContext<'_>) -> Vec<MentionEntr
                 kind: MentionKind::Thread,
             }),
     );
+    let mut profiles: Vec<(i32, usize, &ProfileEntry)> = ctx
+        .profiles
+        .iter()
+        .enumerate()
+        .filter_map(|(ix, p)| {
+            if query.is_empty() {
+                return Some((0, ix, p));
+            }
+            let by_name = fuzzy_score(query, &p.display_name);
+            let by_id = fuzzy_score(query, &p.profile_id);
+            by_name.max(by_id).map(|s| (s, ix, p))
+        })
+        .collect();
+    // Best match first; ties keep the list's recency order.
+    profiles.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    let limit = if query.is_empty() {
+        PROFILE_ROWS
+    } else {
+        usize::MAX
+    };
+    out.extend(profiles.into_iter().take(limit).map(|(_, _, p)| {
+        MentionEntry {
+            uri: MentionUri::Profile {
+                id: p.profile_id.clone(),
+            },
+            label: profile_label(p),
+            detail: p
+                .folder
+                .as_deref()
+                .map(home_relative)
+                .unwrap_or_else(|| "Profile".into()),
+            kind: MentionKind::Profile,
+        }
+    }));
     out
+}
+
+fn profile_label(p: &ProfileEntry) -> String {
+    let name = p.display_name.trim();
+    if name.is_empty() {
+        p.profile_id.clone()
+    } else {
+        name.to_string()
+    }
+}
+
+/// `/Users/me/x` as `~/x`, for a short detail column.
+fn home_relative(path: &str) -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    match path.strip_prefix(home.trim_end_matches('/')) {
+        Some(rest) if !home.is_empty() && (rest.is_empty() || rest.starts_with('/')) => {
+            format!("~{rest}")
+        }
+        _ => path.to_string(),
+    }
 }
 
 fn join(root: &str, rel: &str) -> String {
@@ -892,9 +962,22 @@ mod tests {
                 last_activity_at: 2,
             },
         ];
+        let profiles = vec![
+            ProfileEntry {
+                profile_id: "research".into(),
+                display_name: "Research".into(),
+                folder: Some("/srv/research".into()),
+            },
+            ProfileEntry {
+                profile_id: "modding".into(),
+                display_name: "Game modding".into(),
+                folder: None,
+            },
+        ];
         let ctx = MentionContext {
             index: Some(&index),
             threads: &threads,
+            profiles: &profiles,
             selection: None,
             current_thread: Some("t2"),
             ranking: Ranking::Inline,
@@ -903,10 +986,38 @@ mod tests {
         let kinds: Vec<MentionKind> = rows.iter().map(|r| r.kind).collect();
         assert_eq!(
             kinds,
-            [MentionKind::File, MentionKind::File, MentionKind::Thread]
+            [
+                MentionKind::File,
+                MentionKind::File,
+                MentionKind::Thread,
+                MentionKind::Profile
+            ]
         );
         let labels: Vec<&str> = rows.iter().map(|r| r.label.as_str()).collect();
-        assert_eq!(labels, ["chat/mod.rs", "side/mod.rs", "Fix the mod loader"]);
+        assert_eq!(
+            labels,
+            [
+                "chat/mod.rs",
+                "side/mod.rs",
+                "Fix the mod loader",
+                "Game modding"
+            ]
+        );
+        assert_eq!(
+            rows[3].uri,
+            MentionUri::Profile {
+                id: "modding".into()
+            }
+        );
+        // Found by id too, and the folder is the muted column.
+        let research = mention_matches("resea", &ctx);
+        assert_eq!(research.len(), 1, "{research:?}");
+        assert_eq!(research[0].label, "Research");
+        assert_eq!(research[0].detail, "/srv/research");
+        // A profile chip sends its link, which needs no mention root.
+        let sent = outgoing(&research[0].uri, &chip_text(&research[0].label));
+        assert_eq!(sent, "[@Research](zlo://profile/research)");
+        assert!(!needs_root(&sent));
         assert_eq!(
             rows[0].uri,
             MentionUri::File {

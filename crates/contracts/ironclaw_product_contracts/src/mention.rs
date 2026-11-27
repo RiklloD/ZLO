@@ -2,10 +2,10 @@
 //!
 //! A mention is a Markdown link whose label starts with `@` and whose target
 //! is a [`MentionUri`]: `[@main.rs](file:///repo/src/main.rs#L10-20)`,
-//! `[@Fix login](zlo://thread/<id>)`. Being plain text, it survives storage,
+//! `[@Fix login](zlo://thread/<id>)`, `[@Research](zlo://profile/research)`. Being plain text, it survives storage,
 //! edit and resend unchanged, and any client re-parses it into a chip. The
 //! backend expands each mention at send time (file contents, folder tree,
-//! thread summary, git diff) and appends the result after
+//! thread summary, git diff, how to hand work to a profile) and appends the result after
 //! [`MENTION_CONTEXT_OPEN`], so the stored message keeps the typed text first
 //! and a client shows only that part ([`strip_mention_context`]).
 //!
@@ -84,6 +84,11 @@ pub enum MentionUri {
     Extension {
         name: String,
     },
+    /// Another ZLO profile (its slug id): the user wants the agent to use it,
+    /// which means starting the work there as a subagent.
+    Profile {
+        id: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -127,6 +132,7 @@ impl MentionUri {
             Self::Extension { name } => {
                 format!("{ZLO_SCHEME}extension/{}", encode_segment(name))
             }
+            Self::Profile { id } => format!("{ZLO_SCHEME}profile/{}", encode_segment(id)),
         }
     }
 
@@ -185,6 +191,11 @@ impl MentionUri {
                 name: decode_segment(name)?,
             });
         }
+        if let Some(id) = rest.strip_prefix("profile/") {
+            return no_fragment(Self::Profile {
+                id: decode_segment(id)?,
+            });
+        }
         Err(MentionUriError::UnknownScheme)
     }
 
@@ -195,7 +206,10 @@ impl MentionUri {
                 Some(path)
             }
             Self::GitDiff { cwd } => Some(cwd),
-            Self::Thread { .. } | Self::Skill { .. } | Self::Extension { .. } => None,
+            Self::Thread { .. }
+            | Self::Skill { .. }
+            | Self::Extension { .. }
+            | Self::Profile { .. } => None,
         }
     }
 
@@ -216,7 +230,7 @@ impl MentionUri {
             }
             | Self::Selection { path, range } => format!("{}:{}", base(path), range.fragment()),
             Self::File { path, .. } | Self::Directory { path } => base(path),
-            Self::Thread { id } => id.clone(),
+            Self::Thread { id } | Self::Profile { id } => id.clone(),
             Self::GitDiff { .. } => "diff".into(),
             Self::Skill { name } | Self::Extension { name } => name.clone(),
         }
@@ -292,6 +306,34 @@ pub const MENTION_CONTEXT_OPEN: &str =
     "\n\n---\nMentioned context (expanded by ZLO from the @-mentions above):\n";
 /// Ends the expanded mention context.
 pub const MENTION_CONTEXT_CLOSE: &str = "\n[End of mentioned context]";
+
+/// The words of the context opener that generated text must never hold:
+/// the backend rewrites them inside expanded context (they cannot overlap
+/// themselves, so one pass removes every opener).
+pub const MENTION_CONTEXT_LABEL: &str = "Mentioned context (expanded by ZLO";
+
+/// What the user typed, for picking skills and tools: the text before the
+/// first expanded-context opener that a closer follows (so the context and
+/// anything appended after it, such as attachment notes, never count), with
+/// each remaining mention link replaced by a space. Skill and extension
+/// chips already travel as `/name` and `@name` words; any other chip's label
+/// (a profile, file or thread name) is not a request, and the space keeps it
+/// from joining the words beside it. The backend escapes openers inside
+/// generated text, including carried-over handoff context, so the first
+/// opener with a closer after it is the message's own.
+pub fn selection_text(text: &str) -> String {
+    let typed = match text.split_once(MENTION_CONTEXT_OPEN) {
+        Some((typed, rest)) if rest.contains(MENTION_CONTEXT_CLOSE) => typed,
+        _ => text,
+    };
+    mention_parts(typed)
+        .into_iter()
+        .map(|part| match part {
+            MentionPart::Text(t) => t,
+            MentionPart::Mention(_) => " ",
+        })
+        .collect()
+}
 
 /// The typed part of a stored message, without the expanded mention context.
 pub fn strip_mention_context(text: &str) -> &str {
@@ -457,6 +499,9 @@ mod tests {
             MentionUri::Extension {
                 name: "github".into(),
             },
+            MentionUri::Profile {
+                id: "research".into(),
+            },
         ]
     }
 
@@ -487,6 +532,7 @@ mod tests {
         assert_eq!(all()[4].to_uri(), "zlo://thread/thread-123_abc");
         assert_eq!(all()[5].to_uri(), "zlo://git-diff/repo");
         assert_eq!(all()[6].to_uri(), "zlo://selection/repo/b.rs#L3-9");
+        assert_eq!(all()[9].to_uri(), "zlo://profile/research");
     }
 
     #[test]
@@ -501,6 +547,9 @@ mod tests {
             "zlo://selection/repo/x",
             "zlo://thread/a%2Fb",
             "zlo://thread/",
+            "zlo://profile/",
+            "zlo://profile/a%2Fb",
+            "zlo://profile/x#L1",
             "zlo://nope/x",
             "https://example.com",
             "file:///repo/a.rs#L0",
@@ -526,6 +575,20 @@ mod tests {
         let stored = format!("{typed}{MENTION_CONTEXT_OPEN}file a.rs ...{MENTION_CONTEXT_CLOSE}");
         assert_eq!(strip_mention_context(&stored), typed);
         assert_eq!(strip_mention_context(typed), typed);
+    }
+
+    #[test]
+    fn selection_text_keeps_only_typed_words() {
+        let typed = "use /review with [@Research /x $y @github](zlo://profile/gh)now";
+        let stored = format!(
+            "{typed}{MENTION_CONTEXT_OPEN}/deploy @payments{MENTION_CONTEXT_CLOSE}\n[Attached: a.png]"
+        );
+        assert_eq!(selection_text(&stored), "use /review with  now");
+        assert_eq!(selection_text("plain /x $y"), "plain /x $y");
+        // A pasted opener with no closer after it cuts nothing.
+        let pasted = format!("see{MENTION_CONTEXT_OPEN}then /review");
+        assert_eq!(selection_text(&pasted), pasted);
+        assert!(MENTION_CONTEXT_OPEN.contains(MENTION_CONTEXT_LABEL));
     }
 
     #[test]

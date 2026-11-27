@@ -319,7 +319,9 @@ pub(crate) async fn launch_settings(
                 .filter(|n| names.is_plugin(n))
                 .cloned()
                 .collect();
-            let requested = requested_skills(text, &catalog);
+            // Only typed words ask for skills, never expanded mention context.
+            let typed = ironclaw_product_contracts::mention::selection_text(text);
+            let requested = requested_skills(&typed, &catalog);
             for (name, state) in decide(&document, &catalog, &own, Some(&account), &requested) {
                 overrides.insert(names.native(&name), Listed::from(state.listing));
             }

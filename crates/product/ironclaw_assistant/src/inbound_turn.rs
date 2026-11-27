@@ -829,7 +829,12 @@ where
             source_channel: envelope.source_channel().clone(),
             surface_type: TurnSurfaceType::Direct,
             lane: SubmissionLane::Session,
-            skill_activation_text: Some(message_text.to_string()),
+            // Skills and tools come from what the user typed, never from the
+            // context ZLO expanded from their @-mentions (a mentioned file
+            // or profile's text is data).
+            skill_activation_text: Some(ironclaw_product_contracts::mention::selection_text(
+                message_text,
+            )),
         })
     }
 

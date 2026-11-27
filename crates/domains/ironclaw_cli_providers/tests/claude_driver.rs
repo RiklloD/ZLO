@@ -2249,7 +2249,13 @@ async fn a_requested_skill_launches_on_over_an_off_pin() {
     let (rt, args_log) = skills_runtime(dir.path(), &sink, store, None);
     let thread = thread(&rt).await;
     let mut turn = input();
-    turn.text = "please use $gone on this".into();
+    // Expanded @-mention context (a mentioned profile's soul) is data: a
+    // skill it names is not requested.
+    turn.text = format!(
+        "please use $gone on this{}use $hidden{}",
+        ironclaw_product_contracts::mention::MENTION_CONTEXT_OPEN,
+        ironclaw_product_contracts::mention::MENTION_CONTEXT_CLOSE,
+    );
     rt.start_turn(&thread, turn).await.unwrap();
     wait_for(|| sink.finished.lock().unwrap().len() == 1).await;
     let overrides = &logged_overrides(&args_log)[0];

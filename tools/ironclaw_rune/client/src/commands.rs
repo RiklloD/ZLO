@@ -5,7 +5,7 @@
 //! Two triggers, like opencode and Claude Code:
 //! - `/` opens commands (only as the draft's first word) and skills
 //!   (anywhere). The backend force-activates a `/skill` mention.
-//! - `@` opens mentions: files, folders, threads and a Changes-tab
+//! - `@` opens mentions: files, folders, threads, profiles and a Changes-tab
 //!   selection (`crate::mentions`, sent as Markdown links the
 //!   backend expands), then extensions (the backend pins a mentioned
 //!   extension's tools for that turn) and skills.
@@ -13,7 +13,7 @@
 use ironclaw_product_contracts::product_wire::RebornProductCommandInfo;
 
 use crate::mentions::{
-    MentionContext, MentionEntry, Prepared, ThreadEntry, mention_matches, score,
+    MentionContext, MentionEntry, Prepared, ProfileEntry, ThreadEntry, mention_matches, score,
 };
 
 /// One entry in the composer menu.
@@ -78,6 +78,8 @@ pub struct MenuSources {
     pub extensions: Vec<MenuItem>,
     /// Recent threads for `@`, from the inbox list.
     pub threads: Vec<ThreadEntry>,
+    /// Profiles for `@`, most recently used first, from the inbox list.
+    pub profiles: Vec<ProfileEntry>,
 }
 
 /// The inventory entry the draft's first word names, or `None` when the text
@@ -138,8 +140,14 @@ pub fn menu_matches_with(
         } else {
             mentions.threads
         };
+        let profiles = if mentions.profiles.is_empty() {
+            sources.profiles.as_slice()
+        } else {
+            mentions.profiles
+        };
         let ctx = MentionContext {
             threads,
+            profiles,
             ..*mentions
         };
         let extras = if query.is_empty() {
@@ -330,6 +338,7 @@ mod tests {
                 description: String::new(),
             }],
             threads: Vec::new(),
+            profiles: Vec::new(),
         };
         let names = |v: Vec<MenuItem>| v.iter().map(|i| i.label()).collect::<Vec<_>>();
         assert_eq!(

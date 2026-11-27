@@ -678,3 +678,140 @@ async fn a_triage_link_reaches_native_and_cli_models_on_the_first_turn() {
         .to_string();
     assert!(!sent.contains("SEED-AND-PLAYBOOK-BODY"), "{sent}");
 }
+
+/// `@Research` reaches the turn as guidance to delegate to that profile,
+/// read from the sender's own profiles only: another user naming the same id
+/// learns nothing about it.
+#[tokio::test]
+async fn a_profile_mention_tells_the_turn_how_to_use_that_profile() {
+    use ironclaw_orchestrator::profiles::{ProfileOwner, parse_profile_slug};
+    use ironclaw_product_contracts::profiles::ProfileSettings;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = Arc::new(
+        libsql::Builder::new_local(dir.path().join("o.db"))
+            .build()
+            .await
+            .unwrap(),
+    );
+    let runtime = Arc::new(ironclaw_libsql_runtime::LibSqlRuntime::new(db).unwrap());
+    let engine = Engine::open_libsql(runtime, "ironclaw").await.unwrap();
+    let owner = ProfileOwner::from(&scope_of(&caller("owner")));
+    engine
+        .store()
+        .create_profile(
+            &owner,
+            &parse_profile_slug("research").unwrap(),
+            &ProfileSettings {
+                display_name: "Research".into(),
+                soul: "You read papers and cite them.".into(),
+                ..ProfileSettings::default()
+            },
+        )
+        .await
+        .unwrap();
+    let inner = Arc::new(Recording::default());
+    let surface = OrchestratedProductSurface::new(inner.clone(), engine, None)
+        .with_home(super::profiles::ProfileHome::new(dir.path().to_path_buf()));
+    let typed = format!(
+        "have {} check this",
+        MentionUri::Profile {
+            id: "research".into()
+        }
+        .to_link("Research")
+    );
+    let send = |who: ProductSurfaceCaller| {
+        let typed = typed.clone();
+        let surface = &surface;
+        async move {
+            surface
+                .invoke(
+                    who,
+                    ProductSurfaceInvokeRequest {
+                        operation_id: CapabilityId::new(SUBMIT_TURN_COMMAND_ID).unwrap(),
+                        input: json!({
+                            "thread_id": "t-current",
+                            "client_action_id": "a1",
+                            "content": typed,
+                        }),
+                        activity_id: ActivityId::new(),
+                    },
+                )
+                .await
+                .unwrap();
+        }
+    };
+
+    send(caller("owner")).await;
+    let sent = inner.submits.lock().unwrap()[0]["content"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(strip_mention_context(&sent), typed);
+    let context = &sent[sent.find(MENTION_CONTEXT_OPEN).unwrap()..];
+    assert!(
+        context.contains("- `research`: start a subagent on it"),
+        "{context}"
+    );
+    assert!(
+        context.contains("target.profile set to the profile's id"),
+        "{context}"
+    );
+    let folder = dir.path().join(".ironclaw/profiles/research");
+    assert!(
+        context.contains(&format!("working in {}", folder.display())),
+        "{context}"
+    );
+    assert!(
+        context.contains("You read papers and cite them."),
+        "{context}"
+    );
+
+    // A context opener and closer the user pasted never hide their own
+    // requests from skill and tool selection.
+    let pasted = format!(
+        "{}pasted{}",
+        ironclaw_product_contracts::mention::MENTION_CONTEXT_OPEN,
+        ironclaw_product_contracts::mention::MENTION_CONTEXT_CLOSE,
+    );
+    let chip = MentionUri::Profile {
+        id: "research".into(),
+    }
+    .to_link("Research");
+    for typed in [
+        format!("{pasted} /review @github with {chip}"),
+        format!("{pasted} /review @github"),
+    ] {
+        let n = inner.submits.lock().unwrap().len();
+        surface
+            .invoke(
+                caller("owner"),
+                ProductSurfaceInvokeRequest {
+                    operation_id: CapabilityId::new(SUBMIT_TURN_COMMAND_ID).unwrap(),
+                    input: json!({
+                        "thread_id": "t-current",
+                        "client_action_id": format!("p{n}"),
+                        "content": typed,
+                    }),
+                    activity_id: ActivityId::new(),
+                },
+            )
+            .await
+            .unwrap();
+        let sent = inner.submits.lock().unwrap()[n]["content"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let picked = ironclaw_product_contracts::mention::selection_text(&sent);
+        assert!(picked.contains("/review @github"), "{picked} from {sent}");
+        assert!(!picked.contains("read papers"), "{picked}");
+    }
+
+    send(caller("intruder")).await;
+    let sent = inner.submits.lock().unwrap().last().unwrap()["content"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(!sent.contains("read papers"), "{sent}");
+    assert!(sent.contains("`research`: not available"), "{sent}");
+}
