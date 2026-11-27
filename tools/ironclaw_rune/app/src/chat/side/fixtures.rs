@@ -445,8 +445,10 @@ pub fn browser(s: &mut State) {
         .insert("t2".into(), PathBuf::from("/Users/you/Dev/verpin"));
 }
 
-/// Side on Machines: This Mac in use with two threads running, three saved
-/// computers (online, asleep, refused) and one linked environment.
+/// Side on Machines: This Mac in use with threads running (a main thread
+/// with two subagents under it, one subagent whose main thread is idle),
+/// three saved computers (online, asleep, refused) and one linked
+/// environment.
 pub fn machines(s: &mut State) {
     use zlo_client::inbox::{InboxState, InboxStatus};
     base(s, Some(Tab::Machines), None, |_| {});
@@ -459,8 +461,38 @@ pub fn machines(s: &mut State) {
         InboxState::Working,
         1,
     );
-    a.status = Some(InboxStatus::Working);
+    a.status = Some(InboxStatus::Background);
     a.working_since = Some(now - 7 * 60_000);
+    let engine = |runtime: &str, provider: &str| zlo_client::inbox::InboxEngine {
+        runtime_id: runtime.into(),
+        provider: Some(provider.into()),
+        model: None,
+    };
+    let kid = |id: &str, title: &str, parent: &str, mins: i64, runtime: &str, provider: &str| {
+        let mut k = crate::workspace::fixtures::row(id, title, "default", InboxState::Working, 1);
+        k.status = Some(InboxStatus::Working);
+        k.working_since = Some(now - mins * 60_000);
+        k.parent_thread_id = Some(parent.into());
+        k.engines = vec![engine(runtime, provider)];
+        k
+    };
+    let k1 = kid("k1", "Port the sidebar list", "m1", 5, "codex", "openai");
+    let k2 = kid(
+        "k2",
+        "Port the composer",
+        "m1",
+        4,
+        "claude-cli",
+        "anthropic",
+    );
+    let k3 = kid(
+        "k3",
+        "Collect thesis material",
+        "m3",
+        2,
+        "antigravity",
+        "gemini",
+    );
     let mut b = crate::workspace::fixtures::row(
         "m2",
         "Verpin peer-link smoke test",
@@ -477,7 +509,8 @@ pub fn machines(s: &mut State) {
         InboxState::Inbox,
         90,
     );
-    s.workspace.inbox.list.rows = vec![a, b, c];
+    b.engines = vec![engine("codex", "openai")];
+    s.workspace.inbox.list.rows = vec![a, b, c, k1, k2, k3];
     s.remote.linked.links = Some(Ok(vec![zlo_client::peer::PeerLinkSummary {
         environment_id: "verpin-cloud".into(),
         label: "Verpin cloud".into(),
