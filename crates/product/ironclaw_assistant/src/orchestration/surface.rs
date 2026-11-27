@@ -1029,6 +1029,10 @@ impl ProductSurface for OrchestratedProductSurface {
                         changed = true;
                     }
                     if let Some(context) = handoff {
+                        // An earlier message's expanded mentions may ride in
+                        // the handoff: defused, they never read as this
+                        // message's own (`mention::selection_text`).
+                        let context = super::mentions::escape_openers(&context);
                         let typed = body.content.take().unwrap_or_default();
                         body.content = Some(format!("{context}{HANDOFF_SEP}{typed}"));
                         changed = true;

@@ -313,19 +313,24 @@ pub const MENTION_CONTEXT_CLOSE: &str = "\n[End of mentioned context]";
 pub const MENTION_CONTEXT_LABEL: &str = "Mentioned context (expanded by ZLO";
 
 /// What the user typed, for picking skills and tools: the text before the
-/// first expanded-context opener (so context and anything appended after
-/// it, such as attachment notes, never count), with each mention link
-/// replaced by its bare label (a chip named like a tool is not a request
-/// for that tool).
+/// first expanded-context opener that a closer follows (so the context and
+/// anything appended after it, such as attachment notes, never count), with
+/// each remaining mention link replaced by a space. Skill and extension
+/// chips already travel as `/name` and `@name` words; any other chip's label
+/// (a profile, file or thread name) is not a request, and the space keeps it
+/// from joining the words beside it. The backend escapes openers inside
+/// generated text, including carried-over handoff context, so the first
+/// opener with a closer after it is the message's own.
 pub fn selection_text(text: &str) -> String {
-    let typed = text
-        .split_once(MENTION_CONTEXT_OPEN)
-        .map_or(text, |(typed, _)| typed);
+    let typed = match text.split_once(MENTION_CONTEXT_OPEN) {
+        Some((typed, rest)) if rest.contains(MENTION_CONTEXT_CLOSE) => typed,
+        _ => text,
+    };
     mention_parts(typed)
         .into_iter()
         .map(|part| match part {
-            MentionPart::Text(t) => t.to_string(),
-            MentionPart::Mention(span) => span.label,
+            MentionPart::Text(t) => t,
+            MentionPart::Mention(_) => " ",
         })
         .collect()
 }
@@ -574,12 +579,15 @@ mod tests {
 
     #[test]
     fn selection_text_keeps_only_typed_words() {
-        let typed = "use /review with [@GitHub](zlo://profile/gh) now";
+        let typed = "use /review with [@Research /x $y @github](zlo://profile/gh)now";
         let stored = format!(
             "{typed}{MENTION_CONTEXT_OPEN}/deploy @payments{MENTION_CONTEXT_CLOSE}\n[Attached: a.png]"
         );
-        assert_eq!(selection_text(&stored), "use /review with GitHub now");
-        assert_eq!(selection_text("plain /x"), "plain /x");
+        assert_eq!(selection_text(&stored), "use /review with  now");
+        assert_eq!(selection_text("plain /x $y"), "plain /x $y");
+        // A pasted opener with no closer after it cuts nothing.
+        let pasted = format!("see{MENTION_CONTEXT_OPEN}then /review");
+        assert_eq!(selection_text(&pasted), pasted);
         assert!(MENTION_CONTEXT_OPEN.contains(MENTION_CONTEXT_LABEL));
     }
 

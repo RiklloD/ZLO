@@ -255,7 +255,12 @@ pub(super) async fn expand(
     }
     // An expanded triage session takes one slot of the mention quota.
     let triage_slots = trusted_blocks.len();
-    let resolved = resolve_profiles(&profiles, threads).await;
+    let resolved = resolve_profiles(
+        &profiles,
+        threads,
+        MAX_MENTIONS.saturating_sub(triage_slots),
+    )
+    .await;
     let mut data: Vec<(String, String)> = Vec::new();
     if let Some(guide) = profile_guide(&resolved)
         && guide.len() + 2 <= budget.saturating_sub(used)
@@ -316,7 +321,7 @@ pub(super) async fn expand(
                 }
             }
         };
-        let body = body.replace(MENTION_CONTEXT_LABEL, MENTION_CONTEXT_LABEL_ESCAPED);
+        let body = escape_openers(&body);
         let out = format!("{text}{MENTION_CONTEXT_OPEN}{body}{MENTION_CONTEXT_CLOSE}");
         if out.len() <= limit {
             return out;
@@ -325,6 +330,13 @@ pub(super) async fn expand(
             return text;
         }
     }
+}
+
+/// `text` with every mention-context opener defused, for generated text
+/// placed in a message (expanded context, carried-over handoff context), so
+/// the message's own opener stays the first one.
+pub(super) fn escape_openers(text: &str) -> String {
+    text.replace(MENTION_CONTEXT_LABEL, MENTION_CONTEXT_LABEL_ESCAPED)
 }
 
 /// A whole-file link to a triage playbook.
@@ -400,9 +412,10 @@ struct ResolvedProfile {
 async fn resolve_profiles(
     spans: &[MentionSpan],
     lookups: &dyn MentionLookups,
+    quota: usize,
 ) -> Vec<ResolvedProfile> {
     let mut out = Vec::new();
-    for span in spans.iter().take(MAX_MENTIONS) {
+    for span in spans.iter().take(quota) {
         let MentionUri::Profile { id } = &span.uri else {
             continue;
         };
@@ -1125,6 +1138,56 @@ mod tests {
         assert!(out.contains("tail"), "{out}");
         assert_eq!(strip_mention_context(&out), typed, "{out}");
         assert_eq!(out.matches(MENTION_CONTEXT_OPEN).count(), 1, "{out}");
+    }
+
+    /// A handoff carrying an earlier message's expanded mentions, defused
+    /// and put in front, neither hides this message's requests nor lets
+    /// its own context count as typed.
+    #[tokio::test]
+    async fn carried_over_context_never_hides_the_new_request() {
+        use ironclaw_product_contracts::mention::selection_text;
+        let mut lookups = Threads::default();
+        lookups.1.insert(
+            "research".into(),
+            ProfileDigest {
+                display_name: "Research".into(),
+                folder: "/p".into(),
+                soul: "/old-skill @payments".into(),
+                ..ProfileDigest::default()
+            },
+        );
+        let link = MentionUri::Profile {
+            id: "research".into(),
+        }
+        .to_link("Research");
+        let expand_one = |typed: String| {
+            let lookups = &lookups;
+            async move {
+                expand(
+                    &typed,
+                    &[],
+                    HostFolders::default(),
+                    MentionRuntime::Loop,
+                    lookups,
+                    60_000,
+                )
+                .await
+            }
+        };
+        let old = expand_one(format!("earlier {link}")).await;
+        let new = expand_one(format!("/review this with {link}")).await;
+        let raw = format!("{old}\n\n---\n\n{new}");
+        assert!(
+            !selection_text(&raw).contains("/review"),
+            "the bug, unescaped"
+        );
+        let sent = format!("{}\n\n---\n\n{new}", escape_openers(&old));
+        let picked = selection_text(&sent);
+        assert!(picked.contains("/review this with"), "{picked}");
+        assert!(
+            !picked.ends_with("@payments") && picked.matches("/old-skill").count() == 1,
+            "only the carried-over text, not this message's context: {picked}"
+        );
     }
 
     /// Profiles and other mentions share one quota.

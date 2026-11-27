@@ -1796,12 +1796,12 @@ fn reborn_contracts_crates_carry_a_checked_size_ceiling() {
         // `mention.rs`: the `MentionUri::Profile` variant and its
         // `zlo://profile/<id>` form. The guidance it expands to lives in
         // `ironclaw_assistant::orchestration::mentions`. No behavior.
-        // 17_984 -> 18_007 (2026-11-27, review of the same change): the
-        // tree measures 18_157. +23 lines in `mention.rs`:
+        // 17_984 -> 18_012 (2026-11-27, review of the same change): the
+        // tree measures 18_162. +28 lines in `mention.rs`:
         // `MENTION_CONTEXT_LABEL` and `selection_text`, the grammar-level
         // "what did the user type" every skill and tool selector (native
         // loop and CLI providers) shares, so none re-derives it.
-        ("ironclaw_product_contracts", 18_007),
+        ("ironclaw_product_contracts", 18_012),
         // 832 -> 432 (2026-08-12, #7373 refresh merge, main): re-pinned to the
         // measured count — this row still carried the +400 seed pad the
         // 2026-08-07 re-pin removed from its siblings.

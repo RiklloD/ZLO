@@ -344,7 +344,7 @@ async fn submit_turn_records_skill_activation_message_before_turn_wake() {
         .expect("submit succeeds");
     let recorded = recorded.lock().expect("lock");
     assert_eq!(recorded.len(), 2, "{recorded:?}");
-    assert_eq!(recorded[1].2, "/code-review ask github");
+    assert_eq!(recorded[1].2, "/code-review ask  ");
 }
 
 #[tokio::test]
