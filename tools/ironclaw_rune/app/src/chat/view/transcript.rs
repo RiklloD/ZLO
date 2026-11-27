@@ -114,8 +114,9 @@ pub(super) fn reserve_height(chat: &ChatState) -> f32 {
 struct Rows {
     thread: String,
     items: Rc<Vec<Item>>,
-    /// The run each row belongs to (1-based), for "fork from here".
-    run_of: Vec<u32>,
+    /// The run "fork from here" offers on each row: only a settled run's
+    /// answer has one (see [`fork_runs`]).
+    fork_run: Vec<Option<u32>>,
     /// The newest prompt, while a send's reserve is in play.
     turn_start: Option<usize>,
     outputs: Arc<HashMap<String, CliBody>>,
@@ -152,11 +153,7 @@ impl Rows {
                     streaming: false,
                 },
             ) => {
-                let fork = self
-                    .run_of
-                    .get(ix)
-                    .copied()
-                    .filter(|r| *r > 0 && !key.starts_with(PREFIX_KEY));
+                let fork = self.fork_run.get(ix).copied().flatten();
                 let copied = chat.copied.as_ref().is_some_and(|(c, _)| c == key);
                 // A finished reply only changes with its text, its copy
                 // check, its run and the look: keep its parsed Markdown.
@@ -342,6 +339,47 @@ impl Rows {
     }
 }
 
+/// Which rows offer "fork from here", and from which run (1-based, counted
+/// by prompts): only a run's answer, its last reply, and only once the run
+/// has stopped. Words the agent says between steps, and anything of the
+/// run still going (`live`, steers included), offer none. Rows borrowed from another thread
+/// never do.
+pub(super) fn fork_runs(items: &[Item], live: bool) -> Vec<Option<u32>> {
+    let mut out = vec![None; items.len()];
+    let mut run = 0u32;
+    let mut answer: Option<usize> = None;
+    let settle = |out: &mut Vec<Option<u32>>, answer: Option<usize>, run: u32| {
+        if let Some(ix) = answer.filter(|_| run > 0) {
+            out[ix] = Some(run);
+        }
+    };
+    for (ix, item) in items.iter().enumerate() {
+        match item {
+            Item::Row(Row::User { key, .. }) if !key.starts_with(PREFIX_KEY) => {
+                settle(&mut out, answer.take(), run);
+                run += 1;
+            }
+            Item::Row(Row::Assistant { key, .. }) if !key.starts_with(PREFIX_KEY) => {
+                answer = Some(ix);
+            }
+            _ => {}
+        }
+    }
+    if live {
+        // The live run began at its prompt; a steer only split it.
+        let start = items.iter().rposition(|i| {
+            matches!(i, Item::Row(Row::User { key, steer: None, .. })
+                if !key.starts_with(PREFIX_KEY))
+        });
+        if let Some(start) = start {
+            out[start..].fill(None);
+        }
+    } else {
+        settle(&mut out, answer, run);
+    }
+    out
+}
+
 /// An activity group folding open or shut (`motion::ROW_RESORT`'s time).
 const FOLD: rune::Spring = crate::design::motion::ROW_RESORT;
 /// How deep a folding group's moving edge feathers, in points.
@@ -354,17 +392,7 @@ pub(super) fn transcript(s: &State, chat: &ChatState, k: &Kit) -> El {
         .iter()
         .rposition(|i| matches!(i, Item::Row(Row::User { .. })))
         .filter(|_| chat.reserve.is_some());
-    let run_of: Vec<u32> = items
-        .iter()
-        .scan(0u32, |run, item| {
-            if let Item::Row(Row::User { key, .. }) = item
-                && !key.starts_with(PREFIX_KEY)
-            {
-                *run += 1;
-            }
-            Some(*run)
-        })
-        .collect();
+    let fork_run = fork_runs(&items, chat.running_run().is_some());
     let reserve_h = reserve_height(chat);
     // While the reserve keeps room under it, the newest prompt is the turn's
     // anchor at the top of the list; once the answer fills the room the list
@@ -377,7 +405,7 @@ pub(super) fn transcript(s: &State, chat: &ChatState, k: &Kit) -> El {
     let rows = Rc::new(Rows {
         thread: id.clone(),
         items,
-        run_of,
+        fork_run,
         turn_start,
         outputs: chat.transcript.tool_outputs(),
         reserve_h,
@@ -444,4 +472,90 @@ fn look(s: &State, column: f32) -> u64 {
     s.prefs.ui_font_size.to_bits().hash(&mut h);
     column.to_bits().hash(&mut h);
     h.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use zlo_client::transcript::{SteerMark, ToolStatus};
+
+    use super::*;
+
+    fn user(key: &str, steer: bool) -> Item {
+        Item::Row(Row::User {
+            key: key.into(),
+            text: key.into(),
+            pending: false,
+            attachments: Vec::new(),
+            steer: steer.then(SteerMark::default),
+        })
+    }
+
+    fn reply(key: &str) -> Item {
+        Item::Row(Row::Assistant {
+            key: key.into(),
+            text: key.into(),
+            streaming: false,
+        })
+    }
+
+    fn work(key: &str) -> Item {
+        Item::Activity {
+            key: key.into(),
+            rows: vec![Row::Tool {
+                key: key.into(),
+                title: "Ran ls".into(),
+                detail: None,
+                status: ToolStatus::Completed,
+                reason: None,
+            }],
+            live: false,
+        }
+    }
+
+    /// The keys that offer "fork from here", with their run.
+    fn forks(items: &[Item], live: bool) -> Vec<(String, u32)> {
+        fork_runs(items, live)
+            .into_iter()
+            .zip(items)
+            .filter_map(|(run, item)| run.map(|r| (item.key().to_string(), r)))
+            .collect()
+    }
+
+    /// The words a run says between its steps are not its answer: only the
+    /// last reply of a stopped run offers a fork, never one still running
+    /// (steered or not), never a row borrowed from another thread.
+    #[test]
+    fn only_a_stopped_runs_answer_offers_a_fork() {
+        let items = vec![
+            user(&format!("{PREFIX_KEY}p"), false),
+            reply(&format!("{PREFIX_KEY}a")),
+            user("p1", false),
+            reply("p1-look"),
+            work("w1"),
+            reply("p1-read"),
+            work("w2"),
+            reply("p1-answer"),
+            user("p2", false),
+            reply("p2-look"),
+            work("w3"),
+            reply("p2-mid"),
+        ];
+        assert_eq!(forks(&items, true), [("p1-answer".to_string(), 1)]);
+        assert_eq!(
+            forks(&items, false),
+            [("p1-answer".to_string(), 1), ("p2-mid".to_string(), 2)]
+        );
+
+        let mut steered = items.clone();
+        steered.extend([user("s", true), reply("s-mid")]);
+        assert_eq!(forks(&steered, true), [("p1-answer".to_string(), 1)]);
+        assert_eq!(
+            forks(&steered, false),
+            [
+                ("p1-answer".to_string(), 1),
+                ("p2-mid".to_string(), 2),
+                ("s-mid".to_string(), 3)
+            ]
+        );
+    }
 }
