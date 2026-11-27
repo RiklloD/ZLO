@@ -18,7 +18,8 @@
 #   3. the architecture suite (`--no-fail-fast`: every gate binary runs);
 #   4. the module-charter tests of crates your diff touches.
 # It deliberately runs NO ordinary unit/integration tests and no clippy —
-# `.githooks/pre-push` (quality_gate.sh) remains the full CI-parity gate; this
+# `scripts/ci/quality_gate.sh` is the full CI-parity gate (run it by hand; there
+# is no pre-push hook since 2026-11-27); this
 # is the minutes-long version that catches the deterministic-gate class.
 #
 # Every gate runs even after an earlier one fails — the point is ONE round-trip

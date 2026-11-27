@@ -42,7 +42,7 @@ fi
 echo "[4/6] Configuring git hooks (core.hooksPath = .githooks)..."
 if git rev-parse --git-dir &>/dev/null; then
     git config core.hooksPath .githooks
-    echo "  core.hooksPath set to .githooks (pre-commit safety + WIT version check, commit-msg, local-first pre-push)"
+    echo "  core.hooksPath set to .githooks (pre-commit safety + WIT version check, commit-msg; no pre-push hook)"
 else
     echo "  Skipped: not a git repository"
 fi
